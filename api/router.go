@@ -54,13 +54,22 @@ func SetupRouter(cfg *config.Config, contentFS fs.FS, startTG func(cfg *config.C
 		r.Handle(method, "/s3/*path", s3h)
 	}
 
+	// Health check endpoint for uptime monitors and container probes
+	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "OK") })
+	r.HEAD("/healthz", func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.GET("/health", func(c *gin.Context) { c.String(http.StatusOK, "OK") })
+	r.HEAD("/health", func(c *gin.Context) { c.Status(http.StatusOK) })
+
 	// Public routes
 	r.GET("/setup", h.handleGetSetup)
+	r.HEAD("/setup", h.handleGetSetup)
 	r.POST("/setup", csrfMiddleware(), h.handlePostSetup)
 	r.GET("/login", h.handleGetLogin)
+	r.HEAD("/login", h.handleGetLogin)
 	r.POST("/login", h.handlePostLogin)
 	r.POST("/logout", csrfMiddleware(), h.handleLogout)
 	r.GET("/reset-admin", h.handleGetResetAdmin)
+	r.HEAD("/reset-admin", h.handleGetResetAdmin)
 	r.POST("/reset-admin", csrfMiddleware(), h.handlePostResetAdmin)
 
 	// Public Setup APIs
@@ -75,6 +84,7 @@ func SetupRouter(cfg *config.Config, contentFS fs.FS, startTG func(cfg *config.C
 	r.POST("/api/setup/tg/verify-bots", csrfMiddleware(), h.handleSetupTGVerifyBots)
 	r.POST("/api/setup/restart", csrfMiddleware(), h.handleSetupRestart)
 	r.GET("/api/system/status", h.handleSystemStatus)
+	r.HEAD("/api/system/status", h.handleSystemStatus)
 	r.GET("/api/setup/tg/status", h.handleSetupTGStatus)
 
 	// Public Upload API
@@ -211,6 +221,7 @@ func SetupRouter(cfg *config.Config, contentFS fs.FS, startTG func(cfg *config.C
 
 	// Main Page
 	r.GET("/", h.handleGetIndex)
+	r.HEAD("/", h.handleGetIndex)
 
 	// Private Download
 	r.GET("/download/:id", authMiddleware(), h.handleDownloadFile)

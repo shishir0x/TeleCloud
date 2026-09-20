@@ -117,7 +117,7 @@ func setupCheckMiddleware() gin.HandlerFunc {
 		adminUser := database.GetSetting("admin_username")
 
 		// Always accessible
-		if strings.HasPrefix(path, "/static") || path == "/api/system/status" {
+		if strings.HasPrefix(path, "/static") || path == "/api/system/status" || path == "/healthz" || path == "/health" {
 			c.Next()
 			return
 		}
