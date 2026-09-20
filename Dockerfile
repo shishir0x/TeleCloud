@@ -27,7 +27,7 @@ RUN if [ -d .git ]; then git submodule update --init --recursive; else echo "Not
 RUN cd web && sed -i 's/\r$//' build-frontend.sh && bash build-frontend.sh
 
 # Build Go binary for TARGET architecture
-ARG VERSION=dev
+ARG VERSION=v3.8.8
 ARG DEFAULT_API_ID="0"
 ARG DEFAULT_API_HASH=""
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
