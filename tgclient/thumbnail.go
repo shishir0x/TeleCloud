@@ -24,6 +24,7 @@ import (
 	"telecloud/utils"
 
 	"github.com/google/uuid"
+	"github.com/gotd/td/tg"
 	_ "golang.org/x/image/bmp"
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/tiff"
@@ -40,6 +41,11 @@ var TempStreamTokens sync.Map
 // ffmpegSemaphore aliases the process-wide FFmpeg cap so upload-time
 // thumbnails (utils.CreateLocalThumbnail) and regeneration share one budget.
 var ffmpegSemaphore = utils.FFmpegSemaphore
+
+var (
+	thumbInflightMu sync.Mutex
+	thumbInflight   = make(map[int64]chan struct{})
+)
 
 // readerAtSeeker wraps an io.ReadSeeker to implement io.ReaderAt
 type readerAtSeeker struct {
@@ -58,6 +64,34 @@ func (r *readerAtSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Config) (*string, error) {
+	// Deduplicate in-flight thumbnail generations for the same file ID
+	thumbInflightMu.Lock()
+	if done, exists := thumbInflight[fileID]; exists {
+		thumbInflightMu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		var current database.File
+		if err := database.RODB.Get(&current, "SELECT thumb_path FROM files WHERE id = ?", fileID); err == nil && current.ThumbPath != nil {
+			if _, errStat := os.Stat(*current.ThumbPath); errStat == nil {
+				return current.ThumbPath, nil
+			}
+		}
+		return nil, fmt.Errorf("concurrent thumbnail generation finished without file")
+	}
+	done := make(chan struct{})
+	thumbInflight[fileID] = done
+	thumbInflightMu.Unlock()
+
+	defer func() {
+		thumbInflightMu.Lock()
+		delete(thumbInflight, fileID)
+		close(done)
+		thumbInflightMu.Unlock()
+	}()
+
 	var item database.File
 	err := database.RODB.Get(&item, "SELECT id, filename, size, mime_type, is_folder, thumb_path, message_id, owner FROM files WHERE id = ?", fileID)
 	if err != nil {
@@ -78,6 +112,13 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 
 	if item.MessageID == nil && !hasParts {
 		return nil, fmt.Errorf("file has no message ID or parts on Telegram")
+	}
+
+	// Double check if thumbnail already exists on disk
+	if item.ThumbPath != nil && *item.ThumbPath != "" {
+		if _, err := os.Stat(*item.ThumbPath); err == nil {
+			return item.ThumbPath, nil
+		}
 	}
 
 	// 2. Determine file extension and MIME type
@@ -122,7 +163,29 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 		return &newPath, nil
 	}
 
-	// 4. Handle EPUB / CBZ
+	// 4. Try downloading native Telegram thumbnail (fastest: ~50ms, works for videos/photos/documents)
+	firstMsgID := 0
+	if item.MessageID != nil {
+		firstMsgID = *item.MessageID
+	} else if hasParts {
+		var partMsgID int
+		if errPart := database.RODB.Get(&partMsgID, "SELECT message_id FROM file_parts WHERE file_id = ? ORDER BY part_index ASC LIMIT 1", fileID); errPart == nil {
+			firstMsgID = partMsgID
+		}
+	}
+
+	if firstMsgID > 0 {
+		api := GetAPI()
+		ok, errNative := downloadTelegramThumbnail(ctx, api, firstMsgID, cfg, thumbPath)
+		if (!ok || errNative != nil) && api != Client.API() {
+			ok, errNative = downloadTelegramThumbnail(ctx, Client.API(), firstMsgID, cfg, thumbPath)
+		}
+		if ok {
+			return successHandler(thumbPath)
+		}
+	}
+
+	// 5. Handle EPUB / CBZ
 	if ext == ".epub" || ext == ".cbz" || actualMime == "application/epub+zip" || actualMime == "application/x-cbz" {
 		reader, err := GetTelegramFileReader(ctx, item, cfg)
 		if err != nil {
@@ -137,11 +200,8 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 		return nil, fmt.Errorf("failed to extract cover from zip/epub/cbz")
 	}
 
-	// 4.5. Handle PDF
+	// 6. Handle PDF
 	if ext == ".pdf" || actualMime == "application/pdf" {
-		if errFF := generateThumbnailWithFFmpeg(ctx, fileID, actualMime, &item, cfg, thumbPath, true); errFF == nil {
-			return successHandler(thumbPath)
-		}
 		if pdftoppmPath, err := exec.LookPath("pdftoppm"); err == nil {
 			reader, err := GetTelegramFileReader(ctx, item, cfg)
 			if err == nil {
@@ -166,15 +226,25 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 				}
 			}
 		}
+		if errFF := generateThumbnailWithFFmpeg(ctx, fileID, actualMime, &item, cfg, thumbPath, true); errFF == nil {
+			return successHandler(thumbPath)
+		}
 	}
 
-	// 5. Handle Image types
+	// 7. Handle Image types
 	if strings.HasPrefix(actualMime, "image/") {
 		success := false
 		if reader, err := GetTelegramFileReader(ctx, item, cfg); err == nil {
 			func() {
 				defer reader.Close()
-				if img, _, errDec := image.Decode(reader); errDec == nil {
+				// Read into memory buffer with safe limit (15MB) to avoid fragmented streaming decode
+				imgBytes, errRead := io.ReadAll(io.LimitReader(reader, 15*1024*1024))
+				if errRead != nil || len(imgBytes) == 0 {
+					log.Printf("[Thumbnail] Failed to read image bytes for %s: %v", item.Filename, errRead)
+					return
+				}
+
+				if img, _, errDec := image.Decode(bytes.NewReader(imgBytes)); errDec == nil {
 					bounds := img.Bounds()
 					width := bounds.Max.X
 					height := bounds.Max.Y
@@ -198,6 +268,8 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 					log.Printf("[Thumbnail] Go image decode failed for %s: %v. Trying FFmpeg fallback...", item.Filename, errDec)
 				}
 			}()
+		} else {
+			log.Printf("[Thumbnail] Failed to get reader for image %s: %v", item.Filename, err)
 		}
 
 		if success {
@@ -205,7 +277,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 		}
 
 		// Fallback to FFmpeg if Go decoder failed
-		log.Printf("[Thumbnail] Go decoder failed or could not process. Running FFmpeg fallback for image: %s", item.Filename)
+		log.Printf("[Thumbnail] Running FFmpeg fallback for image: %s", item.Filename)
 		if errFF := generateThumbnailWithFFmpeg(ctx, fileID, actualMime, &item, cfg, thumbPath, true); errFF == nil {
 			return successHandler(thumbPath)
 		} else {
@@ -213,7 +285,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 		}
 	}
 
-	// 6. Handle Video / Audio using local HTTP stream with FFmpeg
+	// 8. Handle Video / Audio using local HTTP stream with FFmpeg
 	if strings.HasPrefix(actualMime, "video/") || strings.HasPrefix(actualMime, "audio/") {
 		if errFF := generateThumbnailWithFFmpeg(ctx, fileID, actualMime, &item, cfg, thumbPath, false); errFF != nil {
 			return nil, errFF
@@ -222,6 +294,105 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 	}
 
 	return nil, fmt.Errorf("unsupported file type for thumbnail generation")
+}
+
+func downloadTelegramThumbnail(ctx context.Context, api *tg.Client, msgID int, cfg *config.Config, thumbPath string) (bool, error) {
+	peer, err := resolveLogGroup(ctx, api, cfg.LogGroupID)
+	if err != nil {
+		return false, err
+	}
+
+	msg, err := FetchTelegramMessage(ctx, api, peer, msgID)
+	if err != nil {
+		return false, err
+	}
+
+	if msg == nil || msg.Media == nil {
+		return false, fmt.Errorf("message has no media")
+	}
+
+	var thumbLoc tg.InputFileLocationClass
+	var inlineBytes []byte
+
+	switch m := msg.Media.(type) {
+	case *tg.MessageMediaDocument:
+		doc, ok := m.Document.(*tg.Document)
+		if !ok || len(doc.Thumbs) == 0 {
+			return false, nil
+		}
+		var bestSize tg.PhotoSizeClass
+		for _, sz := range doc.Thumbs {
+			switch s := sz.(type) {
+			case *tg.PhotoCachedSize:
+				inlineBytes = s.Bytes
+				break
+			case *tg.PhotoSize, *tg.PhotoSizeProgressive:
+				bestSize = sz
+			}
+		}
+		if len(inlineBytes) == 0 && bestSize != nil {
+			thumbLoc = &tg.InputDocumentFileLocation{
+				ID:            doc.ID,
+				AccessHash:    doc.AccessHash,
+				FileReference: doc.FileReference,
+				ThumbSize:     bestSize.GetType(),
+			}
+		}
+
+	case *tg.MessageMediaPhoto:
+		photo, ok := m.Photo.(*tg.Photo)
+		if !ok || len(photo.Sizes) == 0 {
+			return false, nil
+		}
+		var bestSize tg.PhotoSizeClass
+		for _, sz := range photo.Sizes {
+			switch s := sz.(type) {
+			case *tg.PhotoCachedSize:
+				inlineBytes = s.Bytes
+				break
+			case *tg.PhotoSize, *tg.PhotoSizeProgressive:
+				t := sz.GetType()
+				if t == "m" || t == "s" || bestSize == nil {
+					bestSize = sz
+				}
+			}
+		}
+		if len(inlineBytes) == 0 && bestSize != nil {
+			thumbLoc = &tg.InputPhotoFileLocation{
+				ID:            photo.ID,
+				AccessHash:    photo.AccessHash,
+				FileReference: photo.FileReference,
+				ThumbSize:     bestSize.GetType(),
+			}
+		}
+	}
+
+	if len(inlineBytes) > 0 {
+		if err := os.WriteFile(thumbPath, inlineBytes, 0644); err == nil {
+			return true, nil
+		}
+	}
+
+	if thumbLoc != nil {
+		req := &tg.UploadGetFileRequest{
+			Precise:  true,
+			Location: thumbLoc,
+			Offset:   0,
+			Limit:    1048576,
+		}
+		res, err := api.UploadGetFile(ctx, req)
+		if err == nil {
+			if upFile, ok := res.(*tg.UploadFile); ok && len(upFile.Bytes) > 0 {
+				if err := os.WriteFile(thumbPath, upFile.Bytes, 0644); err == nil {
+					return true, nil
+				}
+			}
+		} else {
+			log.Printf("[Thumbnail] Native thumbnail fetch failed for msgID %d: %v", msgID, err)
+		}
+	}
+
+	return false, nil
 }
 
 func generateThumbnailWithFFmpeg(ctx context.Context, fileID int64, actualMime string, item *database.File, cfg *config.Config, thumbPath string, isImage bool) error {
@@ -274,6 +445,8 @@ func generateThumbnailWithFFmpeg(ctx context.Context, fileID int64, actualMime s
 	}
 
 	cmd.Env = os.Environ()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 
 	// Run FFmpeg with a 30 second timeout to prevent hanging
 	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -294,7 +467,7 @@ func generateThumbnailWithFFmpeg(ctx context.Context, fileID int64, actualMime s
 		return fmt.Errorf("ffmpeg timed out: %w", runCtx.Err())
 	case err := <-errCh:
 		if err != nil {
-			return fmt.Errorf("ffmpeg error: %w", err)
+			return fmt.Errorf("ffmpeg error (%w): %s", err, strings.TrimSpace(stderr.String()))
 		}
 	}
 

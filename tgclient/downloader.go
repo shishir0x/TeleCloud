@@ -292,8 +292,8 @@ func (r *tgFileReader) triggerPrefetch(offset int64, limit int64) {
 			<-r.prefetchSem
 		}()
 
-		// Use a different bot than the one used for the synchronous path
-		data, err := r.fetch(pickDownloadAPI(), offset, limit)
+		// Use the same client session that owns r.loc to avoid FILEREF_INVALID / session mismatch
+		data, err := r.fetch(r.api, offset, limit)
 		if err != nil {
 			return
 		}

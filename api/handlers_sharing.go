@@ -268,7 +268,7 @@ func (h *Handler) handleGetSharedThumb(c *gin.Context) {
 		}
 	}
 
-	if item.MessageID != nil {
+	if !item.IsFolder {
 		newThumb, err := tgclient.RegenerateFileThumbnail(c.Request.Context(), int64(item.ID), h.cfg)
 		if err == nil && newThumb != nil {
 			if _, errStat := os.Stat(*newThumb); errStat == nil {
@@ -396,7 +396,7 @@ func (h *Handler) handleGetSharedFileThumbInFolder(c *gin.Context) {
 		}
 	}
 
-	if item.MessageID != nil {
+	if !item.IsFolder {
 		newThumb, err := tgclient.RegenerateFileThumbnail(c.Request.Context(), int64(item.ID), h.cfg)
 		if err == nil && newThumb != nil {
 			if _, errStat := os.Stat(*newThumb); errStat == nil {

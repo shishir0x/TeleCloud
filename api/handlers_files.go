@@ -1213,7 +1213,7 @@ func (h *Handler) handleGetThumb(c *gin.Context) {
 	}
 
 	// 2. Generate on-the-fly if missing
-	if item.MessageID != nil {
+	if !item.IsFolder {
 		newThumb, err := tgclient.RegenerateFileThumbnail(c.Request.Context(), int64(id), h.cfg)
 		if err == nil && newThumb != nil {
 			if _, errStat := os.Stat(*newThumb); errStat == nil {
