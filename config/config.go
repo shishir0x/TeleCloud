@@ -61,12 +61,12 @@ func Load() (*Config, error) {
 	}
 
 	// Number of 1MB chunks fetched ahead of the read cursor while streaming.
-	downloadPrefetch, _ := strconv.Atoi(getEnv("TG_DOWNLOAD_PREFETCH", "4"))
+	downloadPrefetch, _ := strconv.Atoi(getEnv("TG_DOWNLOAD_PREFETCH", "2"))
 	if downloadPrefetch <= 0 {
-		downloadPrefetch = 4
+		downloadPrefetch = 2
 	}
-	if downloadPrefetch > 16 {
-		downloadPrefetch = 16
+	if downloadPrefetch > 8 {
+		downloadPrefetch = 8
 	}
 
 	logGroupID := os.Getenv("LOG_GROUP_ID")

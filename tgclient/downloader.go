@@ -76,7 +76,7 @@ func (c *BlockCache) removeOldest() {
 var (
 	locationCache    = make(map[int]*cachedLocation)
 	cacheMutex       sync.RWMutex
-	globalChunkCache = NewBlockCache(128) // 128 MB maximum buffer size
+	globalChunkCache = NewBlockCache(64) // 64 MB maximum buffer size (1 MB per entry)
 
 	// globalPrefetchSem caps read-ahead requests across *all* concurrent streams.
 	// Without it every viewer independently keeps prefetchDepth chunks in flight,
@@ -84,7 +84,7 @@ var (
 	// trigger FLOOD_WAIT. Prefetch is best-effort: once the budget is exhausted
 	// the reader silently falls back to fetching on demand, which is exactly the
 	// behaviour before read-ahead existed.
-	globalPrefetchSem = make(chan struct{}, 32)
+	globalPrefetchSem = make(chan struct{}, 16)
 )
 
 func init() {
@@ -715,7 +715,7 @@ var getSinglePartReader = func(ctx context.Context, msgID int, size int64, cfg *
 }
 
 func newTGFileReader(ctx context.Context, cancel context.CancelFunc, api *tg.Client, loc tg.InputFileLocationClass, size int64, msgID int, cfg *config.Config) *tgFileReader {
-	depth := 4
+	depth := 2 // default: 2 MB read-ahead per stream (reduced from 4 to save memory)
 	if cfg != nil && cfg.DownloadPrefetch > 0 {
 		depth = cfg.DownloadPrefetch
 	}

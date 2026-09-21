@@ -69,6 +69,14 @@ ENV TORRENT_PATH=/usr/bin/aria2c
 ENV YTDLP_PATH=/usr/local/bin/yt-dlp
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 
+# Go runtime memory controls — keep the GC aggressive on memory-limited instances.
+# GOMEMLIMIT: soft ceiling; GC will try hard to stay under this.
+#   Set slightly below the Render free-tier limit (512 MiB) to avoid OOM kills.
+#   Override in Render's environment settings if you upgrade the instance type.
+# GOGC: run GC when heap grows to 80% of the previous live set (default is 100).
+ENV GOMEMLIMIT=400MiB
+ENV GOGC=80
+
 # Copy the compiled binary (assets are embedded via go:embed)
 COPY --from=builder /app/telecloud /app/telecloud
 

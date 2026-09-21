@@ -13,7 +13,8 @@ import (
 
 func SetupRouter(cfg *config.Config, contentFS fs.FS, startTG func(cfg *config.Config), restartApp func()) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Recovery()) // panic recovery without the memory-accumulating default logger
 	r.SetTrustedProxies([]string{"127.0.0.0/8", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"})
 
 	templ := template.Must(template.New("").ParseFS(contentFS, "templates/*"))
