@@ -2,6 +2,7 @@ package tgclient
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"fmt"
 	"image"
