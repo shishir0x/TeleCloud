@@ -143,8 +143,19 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 	ext := strings.ToLower(filepath.Ext(item.Filename))
 
 	// 3. Define the output thumbnail name and path
+	targetDir := cfg.ThumbsDir
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		// If static/thumbs fails (e.g. read-only filesystem or permissions), fallback to data/thumbs
+		fallbackDir := filepath.Join("data", "thumbs")
+		if errFb := os.MkdirAll(fallbackDir, 0755); errFb == nil {
+			targetDir = fallbackDir
+		} else {
+			targetDir = filepath.Join(os.TempDir(), "telecloud_thumbs")
+			_ = os.MkdirAll(targetDir, 0755)
+		}
+	}
 	thumbName := strings.ReplaceAll(uuid.New().String(), "-", "") + ".jpg"
-	thumbPath := filepath.Join(cfg.ThumbsDir, thumbName)
+	thumbPath := filepath.Join(targetDir, thumbName)
 	_ = os.MkdirAll(filepath.Dir(thumbPath), 0755)
 
 	log.Printf("[Thumbnail] Generating thumbnail for file %s (ID: %d, Mime: %s)", item.Filename, fileID, actualMime)
@@ -445,21 +456,21 @@ func generateThumbnailWithFFmpeg(ctx context.Context, fileID int64, actualMime s
 		cmd = exec.CommandContext(
 			runCtx,
 			cfg.FFMPEGPath, "-y", "-i", localURL,
-			"-vframes", "1",
+			"-frames:v", "1", "-update", "1",
 			"-vf", "scale=320:-1", thumbPath,
 		)
 	} else if strings.HasPrefix(actualMime, "video/") {
 		cmd = exec.CommandContext(
 			runCtx,
 			cfg.FFMPEGPath, "-y", "-ss", "00:00:01.000", "-i", localURL,
-			"-vframes", "1",
+			"-frames:v", "1", "-update", "1",
 			"-vf", "scale=320:-1", thumbPath,
 		)
 	} else { // audio/
 		cmd = exec.CommandContext(
 			runCtx,
 			cfg.FFMPEGPath, "-y", "-i", localURL,
-			"-an", "-vframes", "1",
+			"-an", "-frames:v", "1", "-update", "1",
 			"-vf", "scale=320:-1", thumbPath,
 		)
 	}

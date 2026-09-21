@@ -111,7 +111,15 @@ func DetectMime(filename, currentMime string) string {
 
 func InitMedia(dir string) {
 	ThumbsDir = dir
-	os.MkdirAll(ThumbsDir, os.ModePerm)
+	if err := os.MkdirAll(ThumbsDir, 0755); err != nil {
+		fallbackDir := filepath.Join("data", "thumbs")
+		if errFb := os.MkdirAll(fallbackDir, 0755); errFb == nil {
+			ThumbsDir = fallbackDir
+		} else {
+			ThumbsDir = filepath.Join(os.TempDir(), "telecloud_thumbs")
+			_ = os.MkdirAll(ThumbsDir, 0755)
+		}
+	}
 }
 
 func CreateLocalThumbnail(sourcePath, mimeType, ffmpegPath string) *string {
@@ -139,7 +147,7 @@ func CreateLocalThumbnail(sourcePath, mimeType, ffmpegPath string) *string {
 			defer func() { <-FFmpegSemaphore }()
 			cmd := exec.Command(
 				ffmpegPath, "-y", "-i", sourcePath,
-				"-vframes", "1",
+				"-frames:v", "1", "-update", "1",
 				"-vf", "scale=320:-1", thumbPath,
 			)
 			cmd.Env = os.Environ()
@@ -157,7 +165,7 @@ func CreateLocalThumbnail(sourcePath, mimeType, ffmpegPath string) *string {
 		defer func() { <-FFmpegSemaphore }()
 		cmd := exec.Command(
 			ffmpegPath, "-y", "-ss", "00:00:01.000", "-i", sourcePath,
-			"-vframes", "1",
+			"-frames:v", "1", "-update", "1",
 			"-vf", "scale=320:-1", thumbPath,
 		)
 		cmd.Env = os.Environ()
@@ -174,7 +182,7 @@ func CreateLocalThumbnail(sourcePath, mimeType, ffmpegPath string) *string {
 		defer func() { <-FFmpegSemaphore }()
 		cmd := exec.Command(
 			ffmpegPath, "-y", "-i", sourcePath,
-			"-an", "-vframes", "1",
+			"-an", "-frames:v", "1", "-update", "1",
 			"-vf", "scale=320:-1", thumbPath,
 		)
 		cmd.Env = os.Environ()
@@ -209,7 +217,7 @@ func generatePdfThumbnail(sourcePath, thumbPath, ffmpegPath string) *string {
 		defer func() { <-FFmpegSemaphore }()
 		cmd := exec.Command(
 			ffmpegPath, "-y", "-i", sourcePath,
-			"-vframes", "1",
+			"-frames:v", "1", "-update", "1",
 			"-vf", "scale=320:-1", thumbPath,
 		)
 		cmd.Env = os.Environ()

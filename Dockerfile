@@ -35,8 +35,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags="-s -w -X main.version=${VERSION} -X telecloud/config.DefaultAPIIDStr=${DEFAULT_API_ID} -X telecloud/config.DefaultAPIHash=${DEFAULT_API_HASH}" \
     -o telecloud .
 
-# Create data directory and set permissions for the nonroot user (UID 65532)
-RUN mkdir -p /app/data && chown 65532:65532 /app/data
+# Create data and thumbnail directories and set permissions for the nonroot user (UID 65532)
+RUN mkdir -p /app/data /app/static/thumbs && chown -R 65532:65532 /app/data /app/static
 
 # ============================================================
 # Stage 2: Minimal runtime image
@@ -68,8 +68,9 @@ ENV FFMPEG_PATH=/usr/bin/ffmpeg
 # Copy the compiled binary (assets are embedded via go:embed)
 COPY --from=builder /app/telecloud /app/telecloud
 
-# Copy the data directory with correct ownership
+# Copy the data and thumbnail directories with correct ownership
 COPY --from=builder --chown=nonroot:nonroot /app/data /app/data
+COPY --from=builder --chown=nonroot:nonroot /app/static /app/static
 
 USER nonroot:nonroot
 
