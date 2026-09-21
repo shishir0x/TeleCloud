@@ -7,8 +7,8 @@ ARG TARGETARCH
 ARG BUILDPLATFORM
 WORKDIR /app
 
-# Install curl, unzip, and Bun for frontend
-RUN apt-get update && apt-get install -y ca-certificates curl unzip && \
+# Install curl, unzip, git, and Bun for frontend
+RUN apt-get update && apt-get install -y ca-certificates curl unzip git && \
     curl -fsSL https://bun.sh/install | bash && \
     mv /root/.bun/bin/bun /usr/local/bin/bun && \
     rm -rf /var/lib/apt/lists/*
@@ -20,8 +20,12 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Fetch frontend submodule if building from a git clone
-RUN if [ -d .git ]; then git submodule update --init --recursive; else echo "Not a git repository, skipping submodule init"; fi
+# Fetch frontend submodule if missing or empty (e.g. CI/Render clone without recursive submodules)
+RUN if [ ! -f web/build-frontend.sh ]; then \
+        echo "Frontend files not found in build context, cloning telecloud-frontend..."; \
+        rm -rf web && \
+        git clone --depth 1 https://github.com/shishir0x/telecloud-frontend.git web; \
+    fi
 
 # Build frontend (Tailwind + bundle assets via bun)
 RUN cd web && sed -i 's/\r$//' build-frontend.sh && bash build-frontend.sh
