@@ -207,32 +207,36 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 		if files[i].ShareToken != nil && !files[i].IsFolder {
 			files[i].DirectToken = utils.GenerateDirectToken(*files[i].ShareToken)
 		}
+		hasValidThumb := false
 		if files[i].ThumbPath != nil {
 			if _, err := os.Stat(*files[i].ThumbPath); err == nil {
-				files[i].HasThumb = true
+				hasValidThumb = true
 			}
 		}
-		if files[i].SharePassword != nil && *files[i].SharePassword != "" {
-			files[i].HasSharePassword = true
-		}
 
-		if !files[i].IsFolder && !files[i].HasThumb && files[i].MessageID != nil {
+		if !files[i].IsFolder && files[i].MessageID != nil {
 			mimeType := ""
 			if files[i].MimeType != nil {
 				mimeType = *files[i].MimeType
 			}
-			if mimeType == "" {
-				mimeType = mime.TypeByExtension(filepath.Ext(files[i].Filename))
-			}
+			actualMime := utils.DetectMime(files[i].Filename, mimeType)
 			ext := strings.ToLower(filepath.Ext(files[i].Filename))
-			isMedia := strings.HasPrefix(mimeType, "image/") ||
-				strings.HasPrefix(mimeType, "video/") ||
-				strings.HasPrefix(mimeType, "audio/") ||
-				ext == ".epub" || ext == ".cbz"
+			isMedia := strings.HasPrefix(actualMime, "image/") ||
+				strings.HasPrefix(actualMime, "video/") ||
+				strings.HasPrefix(actualMime, "audio/") ||
+				actualMime == "application/pdf" ||
+				ext == ".pdf" || ext == ".epub" || ext == ".cbz"
 
 			if isMedia {
-				tgclient.QueueThumbnailGeneration(int64(files[i].ID), h.cfg)
+				files[i].HasThumb = true
+			} else {
+				files[i].HasThumb = hasValidThumb
 			}
+		} else {
+			files[i].HasThumb = hasValidThumb
+		}
+		if files[i].SharePassword != nil && *files[i].SharePassword != "" {
+			files[i].HasSharePassword = true
 		}
 	}
 	var storageUsed int64
@@ -1188,21 +1192,39 @@ func (h *Handler) handleGetThumb(c *gin.Context) {
 
 	var queryErr error
 	if isAdmin {
-		queryErr = database.RODB.Get(&item, "SELECT path, thumb_path FROM files WHERE id = ? AND deleted_at IS NULL", id)
+		queryErr = database.RODB.Get(&item, "SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", id)
 	} else {
 		prefix := "/" + username
-		queryErr = database.RODB.Get(&item, "SELECT path, thumb_path FROM files WHERE id = ? AND (owner = ? OR path = ? OR path LIKE ?) AND deleted_at IS NULL", id, username, prefix, prefix+"/%")
+		queryErr = database.RODB.Get(&item, "SELECT * FROM files WHERE id = ? AND (owner = ? OR path = ? OR path LIKE ?) AND deleted_at IS NULL", id, username, prefix, prefix+"/%")
 	}
 
-	if queryErr != nil || item.ThumbPath == nil {
+	if queryErr != nil || item.IsFolder {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	if _, err := os.Stat(*item.ThumbPath); err != nil {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
+
+	// 1. If thumbnail already exists on disk, serve it immediately
+	if item.ThumbPath != nil && *item.ThumbPath != "" {
+		if _, err := os.Stat(*item.ThumbPath); err == nil {
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.File(*item.ThumbPath)
+			return
+		}
 	}
-	c.File(*item.ThumbPath)
+
+	// 2. Generate on-the-fly if missing
+	if item.MessageID != nil {
+		newThumb, err := tgclient.RegenerateFileThumbnail(c.Request.Context(), int64(id), h.cfg)
+		if err == nil && newThumb != nil {
+			if _, errStat := os.Stat(*newThumb); errStat == nil {
+				c.Header("Cache-Control", "public, max-age=86400")
+				c.File(*newThumb)
+				return
+			}
+		}
+	}
+
+	c.AbortWithStatus(http.StatusNotFound)
 }
 
 func (h *Handler) handleStreamFile(c *gin.Context) {

@@ -250,7 +250,7 @@ func (h *Handler) handleDownloadSharedFile(c *gin.Context) {
 func (h *Handler) handleGetSharedThumb(c *gin.Context) {
 	token := c.Param("token")
 	var item database.File
-	if err := database.RODB.Get(&item, "SELECT thumb_path, share_password FROM files WHERE share_token = ? AND deleted_at IS NULL", token); err != nil || item.ThumbPath == nil {
+	if err := database.RODB.Get(&item, "SELECT * FROM files WHERE share_token = ? AND deleted_at IS NULL", token); err != nil {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
@@ -259,11 +259,27 @@ func (h *Handler) handleGetSharedThumb(c *gin.Context) {
 		c.AbortWithStatus(http.StatusForbidden)
 		return
 	}
-	if _, err := os.Stat(*item.ThumbPath); err != nil {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
+
+	if item.ThumbPath != nil && *item.ThumbPath != "" {
+		if _, err := os.Stat(*item.ThumbPath); err == nil {
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.File(*item.ThumbPath)
+			return
+		}
 	}
-	c.File(*item.ThumbPath)
+
+	if item.MessageID != nil {
+		newThumb, err := tgclient.RegenerateFileThumbnail(c.Request.Context(), int64(item.ID), h.cfg)
+		if err == nil && newThumb != nil {
+			if _, errStat := os.Stat(*newThumb); errStat == nil {
+				c.Header("Cache-Control", "public, max-age=86400")
+				c.File(*newThumb)
+				return
+			}
+		}
+	}
+
+	c.AbortWithStatus(http.StatusNotFound)
 }
 
 // resolveSharedFileInFolder resolves a file by ID under a shared token.
@@ -363,8 +379,8 @@ func (h *Handler) handleGetSharedFileThumbInFolder(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 
 	item, err := h.resolveSharedFileInFolder(c, token, id)
-	if err != nil || item.ThumbPath == nil {
-		if err != nil && (err.Error() == "unauthorized" || err.Error() == "forbidden") {
+	if err != nil {
+		if err.Error() == "unauthorized" || err.Error() == "forbidden" {
 			c.AbortWithStatus(http.StatusForbidden)
 		} else {
 			c.AbortWithStatus(http.StatusNotFound)
@@ -372,12 +388,26 @@ func (h *Handler) handleGetSharedFileThumbInFolder(c *gin.Context) {
 		return
 	}
 
-	if _, err := os.Stat(*item.ThumbPath); err != nil {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
+	if item.ThumbPath != nil && *item.ThumbPath != "" {
+		if _, err := os.Stat(*item.ThumbPath); err == nil {
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.File(*item.ThumbPath)
+			return
+		}
 	}
 
-	c.File(*item.ThumbPath)
+	if item.MessageID != nil {
+		newThumb, err := tgclient.RegenerateFileThumbnail(c.Request.Context(), int64(item.ID), h.cfg)
+		if err == nil && newThumb != nil {
+			if _, errStat := os.Stat(*newThumb); errStat == nil {
+				c.Header("Cache-Control", "public, max-age=86400")
+				c.File(*newThumb)
+				return
+			}
+		}
+	}
+
+	c.AbortWithStatus(http.StatusNotFound)
 }
 
 func (h *Handler) handleGetDirectDownload(c *gin.Context) {

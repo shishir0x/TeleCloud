@@ -82,13 +82,11 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 	}
 
 	// 2. Determine file extension and MIME type
-	actualMime := ""
+	rawMime := ""
 	if item.MimeType != nil {
-		actualMime = *item.MimeType
+		rawMime = *item.MimeType
 	}
-	if actualMime == "" || actualMime == "application/octet-stream" {
-		actualMime = mime.TypeByExtension(filepath.Ext(item.Filename))
-	}
+	actualMime := utils.DetectMime(item.Filename, rawMime)
 	ext := strings.ToLower(filepath.Ext(item.Filename))
 
 	// 3. Define the output thumbnail name and path
@@ -140,34 +138,67 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 		return nil, fmt.Errorf("failed to extract cover from zip/epub/cbz")
 	}
 
+	// 4.5. Handle PDF
+	if ext == ".pdf" || actualMime == "application/pdf" {
+		if errFF := generateThumbnailWithFFmpeg(ctx, fileID, actualMime, &item, cfg, thumbPath, true); errFF == nil {
+			return successHandler(thumbPath)
+		}
+		if pdftoppmPath, err := exec.LookPath("pdftoppm"); err == nil {
+			reader, err := GetTelegramFileReader(ctx, item, cfg)
+			if err == nil {
+				defer reader.Close()
+				tmpPdf := thumbPath + "_temp.pdf"
+				outFile, errCreate := os.Create(tmpPdf)
+				if errCreate == nil {
+					_, _ = io.Copy(outFile, io.LimitReader(reader, 10*1024*1024))
+					outFile.Close()
+					prefix := thumbPath + "_tmp"
+					cmd := exec.CommandContext(ctx, pdftoppmPath, "-jpeg", "-f", "1", "-l", "1", "-scale-to", "320", "-singlefile", tmpPdf, prefix)
+					cmd.Env = os.Environ()
+					if err := cmd.Run(); err == nil {
+						generated := prefix + ".jpg"
+						if _, err := os.Stat(generated); err == nil {
+							_ = os.Rename(generated, thumbPath)
+							_ = os.Remove(tmpPdf)
+							return successHandler(thumbPath)
+						}
+					}
+					_ = os.Remove(tmpPdf)
+				}
+			}
+		}
+	}
+
 	// 5. Handle Image types
 	if strings.HasPrefix(actualMime, "image/") {
 		success := false
 		if reader, err := GetTelegramFileReader(ctx, item, cfg); err == nil {
-			defer reader.Close()
-			if img, _, errDec := image.Decode(reader); errDec == nil {
-				bounds := img.Bounds()
-				width := bounds.Max.X
-				height := bounds.Max.Y
+			func() {
+				defer reader.Close()
+				if img, _, errDec := image.Decode(reader); errDec == nil {
+					bounds := img.Bounds()
+					width := bounds.Max.X
+					height := bounds.Max.Y
 
-				if width > 320 {
-					height = (height * 320) / width
-					width = 320
-				}
-
-				dst := image.NewRGBA(image.Rect(0, 0, width, height))
-				draw.BiLinear.Scale(dst, dst.Bounds(), img, img.Bounds(), draw.Src, nil)
-
-				out, errOut := os.Create(thumbPath)
-				if errOut == nil {
-					if errEnc := jpeg.Encode(out, dst, &jpeg.Options{Quality: 85}); errEnc == nil {
-						success = true
+					if width > 320 {
+						height = (height * 320) / width
+						width = 320
 					}
-					out.Close()
+
+					dst := image.NewRGBA(image.Rect(0, 0, width, height))
+					draw.BiLinear.Scale(dst, dst.Bounds(), img, img.Bounds(), draw.Src, nil)
+
+					out, errOut := os.Create(thumbPath)
+					if errOut == nil {
+						if errEnc := jpeg.Encode(out, dst, &jpeg.Options{Quality: 85}); errEnc == nil {
+							success = true
+						}
+						out.Close()
+					}
+				} else {
+					log.Printf("[Thumbnail] Go image decode failed for %s: %v. Trying FFmpeg fallback...", item.Filename, errDec)
 				}
-			} else {
-				log.Printf("[Thumbnail] Go image decode failed for %s: %v. Trying FFmpeg fallback...", item.Filename, errDec)
-			}
+			}()
 		}
 
 		if success {
