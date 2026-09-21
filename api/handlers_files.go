@@ -214,7 +214,7 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 			}
 		}
 
-		if !files[i].IsFolder && files[i].MessageID != nil {
+		if !files[i].IsFolder {
 			mimeType := ""
 			if files[i].MimeType != nil {
 				mimeType = *files[i].MimeType
@@ -1199,6 +1199,9 @@ func (h *Handler) handleGetThumb(c *gin.Context) {
 	}
 
 	if queryErr != nil || item.IsFolder {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
@@ -1221,9 +1224,14 @@ func (h *Handler) handleGetThumb(c *gin.Context) {
 				c.File(*newThumb)
 				return
 			}
+		} else if err != nil {
+			log.Printf("[handleGetThumb] Thumbnail generation failed for file ID %d (%s): %v", id, item.Filename, err)
 		}
 	}
 
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 	c.AbortWithStatus(http.StatusNotFound)
 }
 

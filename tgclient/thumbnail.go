@@ -45,6 +45,7 @@ var ffmpegSemaphore = utils.FFmpegSemaphore
 var (
 	thumbInflightMu sync.Mutex
 	thumbInflight   = make(map[int64]chan struct{})
+	thumbGenSem     = make(chan struct{}, 3)
 )
 
 // readerAtSeeker wraps an io.ReadSeeker to implement io.ReaderAt
@@ -91,6 +92,18 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 		close(done)
 		thumbInflightMu.Unlock()
 	}()
+
+	// Limit concurrent generation to prevent CPU/memory exhaustion and Telegram flood waits
+	select {
+	case thumbGenSem <- struct{}{}:
+		defer func() { <-thumbGenSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	// Use an independent context so generation finishes and persists even if client pauses/cancels request
+	genCtx, genCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer genCancel()
 
 	var item database.File
 	err := database.RODB.Get(&item, "SELECT id, filename, size, mime_type, is_folder, thumb_path, message_id, owner FROM files WHERE id = ?", fileID)
@@ -176,9 +189,9 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 
 	if firstMsgID > 0 {
 		api := GetAPI()
-		ok, errNative := downloadTelegramThumbnail(ctx, api, firstMsgID, cfg, thumbPath)
+		ok, errNative := downloadTelegramThumbnail(genCtx, api, firstMsgID, cfg, thumbPath)
 		if (!ok || errNative != nil) && api != Client.API() {
-			ok, errNative = downloadTelegramThumbnail(ctx, Client.API(), firstMsgID, cfg, thumbPath)
+			ok, errNative = downloadTelegramThumbnail(genCtx, Client.API(), firstMsgID, cfg, thumbPath)
 		}
 		if ok {
 			return successHandler(thumbPath)
@@ -187,7 +200,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 
 	// 5. Handle EPUB / CBZ
 	if ext == ".epub" || ext == ".cbz" || actualMime == "application/epub+zip" || actualMime == "application/x-cbz" {
-		reader, err := GetTelegramFileReader(ctx, item, cfg)
+		reader, err := GetTelegramFileReader(genCtx, item, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get file reader: %w", err)
 		}
@@ -203,7 +216,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 	// 6. Handle PDF
 	if ext == ".pdf" || actualMime == "application/pdf" {
 		if pdftoppmPath, err := exec.LookPath("pdftoppm"); err == nil {
-			reader, err := GetTelegramFileReader(ctx, item, cfg)
+			reader, err := GetTelegramFileReader(genCtx, item, cfg)
 			if err == nil {
 				defer reader.Close()
 				tmpPdf := thumbPath + "_temp.pdf"
@@ -212,7 +225,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 					_, _ = io.Copy(outFile, io.LimitReader(reader, 10*1024*1024))
 					outFile.Close()
 					prefix := thumbPath + "_tmp"
-					cmd := exec.CommandContext(ctx, pdftoppmPath, "-jpeg", "-f", "1", "-l", "1", "-scale-to", "320", "-singlefile", tmpPdf, prefix)
+					cmd := exec.CommandContext(genCtx, pdftoppmPath, "-jpeg", "-f", "1", "-l", "1", "-scale-to", "320", "-singlefile", tmpPdf, prefix)
 					cmd.Env = os.Environ()
 					if err := cmd.Run(); err == nil {
 						generated := prefix + ".jpg"
@@ -226,7 +239,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 				}
 			}
 		}
-		if errFF := generateThumbnailWithFFmpeg(ctx, fileID, actualMime, &item, cfg, thumbPath, true); errFF == nil {
+		if errFF := generateThumbnailWithFFmpeg(genCtx, fileID, actualMime, &item, cfg, thumbPath, true); errFF == nil {
 			return successHandler(thumbPath)
 		}
 	}
@@ -234,7 +247,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 	// 7. Handle Image types
 	if strings.HasPrefix(actualMime, "image/") {
 		success := false
-		if reader, err := GetTelegramFileReader(ctx, item, cfg); err == nil {
+		if reader, err := GetTelegramFileReader(genCtx, item, cfg); err == nil {
 			func() {
 				defer reader.Close()
 				// Read into memory buffer with safe limit (15MB) to avoid fragmented streaming decode
@@ -278,7 +291,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 
 		// Fallback to FFmpeg if Go decoder failed
 		log.Printf("[Thumbnail] Running FFmpeg fallback for image: %s", item.Filename)
-		if errFF := generateThumbnailWithFFmpeg(ctx, fileID, actualMime, &item, cfg, thumbPath, true); errFF == nil {
+		if errFF := generateThumbnailWithFFmpeg(genCtx, fileID, actualMime, &item, cfg, thumbPath, true); errFF == nil {
 			return successHandler(thumbPath)
 		} else {
 			return nil, fmt.Errorf("failed to decode image with Go and FFmpeg: %w", errFF)
@@ -287,7 +300,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 
 	// 8. Handle Video / Audio using local HTTP stream with FFmpeg
 	if strings.HasPrefix(actualMime, "video/") || strings.HasPrefix(actualMime, "audio/") {
-		if errFF := generateThumbnailWithFFmpeg(ctx, fileID, actualMime, &item, cfg, thumbPath, false); errFF != nil {
+		if errFF := generateThumbnailWithFFmpeg(genCtx, fileID, actualMime, &item, cfg, thumbPath, false); errFF != nil {
 			return nil, errFF
 		}
 		return successHandler(thumbPath)
@@ -423,21 +436,28 @@ func generateThumbnailWithFFmpeg(ctx context.Context, fileID int64, actualMime s
 	}
 	localURL := fmt.Sprintf("http://%s:%s/api/temp-stream/%s", host, cfg.Port, token)
 
+	// Run FFmpeg with a 30 second timeout to prevent hanging
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+
 	var cmd *exec.Cmd
 	if isImage {
-		cmd = exec.Command(
+		cmd = exec.CommandContext(
+			runCtx,
 			cfg.FFMPEGPath, "-y", "-i", localURL,
 			"-vframes", "1",
 			"-vf", "scale=320:-1", thumbPath,
 		)
 	} else if strings.HasPrefix(actualMime, "video/") {
-		cmd = exec.Command(
+		cmd = exec.CommandContext(
+			runCtx,
 			cfg.FFMPEGPath, "-y", "-ss", "00:00:01.000", "-i", localURL,
 			"-vframes", "1",
 			"-vf", "scale=320:-1", thumbPath,
 		)
 	} else { // audio/
-		cmd = exec.Command(
+		cmd = exec.CommandContext(
+			runCtx,
 			cfg.FFMPEGPath, "-y", "-i", localURL,
 			"-an", "-vframes", "1",
 			"-vf", "scale=320:-1", thumbPath,
@@ -447,10 +467,6 @@ func generateThumbnailWithFFmpeg(ctx context.Context, fileID int64, actualMime s
 	cmd.Env = os.Environ()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-
-	// Run FFmpeg with a 30 second timeout to prevent hanging
-	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer runCancel()
 
 	cmd.Process = nil
 

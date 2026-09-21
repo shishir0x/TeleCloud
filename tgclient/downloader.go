@@ -377,9 +377,13 @@ func (r *tgFileReader) fetchChunk(api *tg.Client, offset int64, limit int64) ([]
 			cacheMutex.Unlock()
 
 			// Re-resolve
+			resolvedApi := api
 			newLoc, errResolve := resolveMediaLocation(r.ctx, api, r.msgID, r.cfg)
 			if errResolve != nil && api != Client.API() {
 				newLoc, errResolve = resolveMediaLocation(r.ctx, Client.API(), r.msgID, r.cfg)
+				if errResolve == nil {
+					resolvedApi = Client.API()
+				}
 			}
 
 			if errResolve == nil && newLoc != nil {
@@ -390,11 +394,13 @@ func (r *tgFileReader) fetchChunk(api *tg.Client, offset int64, limit int64) ([]
 				cacheMutex.Lock()
 				locationCache[r.msgID] = &cachedLocation{
 					loc:       newLoc,
-					api:       api,
+					api:       resolvedApi,
 					expiresAt: time.Now().Add(1 * time.Hour),
 				}
 				cacheMutex.Unlock()
 
+				api = resolvedApi
+				r.api = resolvedApi
 				req.Location = newLoc
 				refreshed = true
 				attempt-- // Do not consume a retry attempt
@@ -677,17 +683,13 @@ var getSinglePartReader = func(ctx context.Context, msgID int, size int64, cfg *
 	api := GetAPI()
 	loc, err := resolve(api)
 
-	// Fallback to main client if the selected bot failed to find the message/media
+	// Fallback to main client if the selected bot failed to find the message/media or had any error
 	if err != nil && api != Client.API() {
-		// Only retry for specific "not found" or "no media" errors which usually indicate permission issues in bot pool
-		errStr := err.Error()
-		if strings.Contains(errStr, "not found") || strings.Contains(errStr, "no media") {
-			mainApi := Client.API()
-			if locRetry, errRetry := resolve(mainApi); errRetry == nil {
-				api = mainApi
-				loc = locRetry
-				err = nil
-			}
+		mainApi := Client.API()
+		if locRetry, errRetry := resolve(mainApi); errRetry == nil {
+			api = mainApi
+			loc = locRetry
+			err = nil
 		}
 	}
 
