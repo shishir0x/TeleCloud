@@ -2,7 +2,6 @@ package tgclient
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
 	"fmt"
 	"image"
@@ -11,7 +10,6 @@ import (
 	_ "image/png"
 	"io"
 	"log"
-	"mime"
 	"os"
 	"os/exec"
 	"path/filepath"
