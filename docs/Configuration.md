@@ -1,7 +1,134 @@
-# ⚙️ Configuration Guide / Hướng dẫn cấu hình
+# ⚙️ Configuration Guide
 
 Detailed information about configuring TeleCloud via environment variables and reverse proxies.
-Thông tin chi tiết về việc cấu hình TeleCloud qua biến môi trường và reverse proxy.
+
+---
+
+## 🇺🇸 English
+
+### 1. .env File (Environment Variables)
+
+Copy `env.example` to `.env` in the binary directory and fill in your details:
+
+*   `API_ID` & `API_HASH`: **Already embedded by default in all official Binary and Docker Image releases**. General users **DO NOT NEED TO CONFIGURE** these and can log in immediately. These options are strictly for Developers or Advanced Users who wish to compile from source or use their own custom API credentials (via the *Advanced settings* section in Web Setup or via `-ldflags` during build). No longer supported in the `.env` file.
+*   `LOG_GROUP_ID`: (Optional) ID of storage group or `me`. If empty, you can configure via Web Setup.
+    *   **How to get LOG_GROUP_ID**: Create a new Telegram group, make sure to enable "Chat History" in the group settings, add bot `@get_all_telegram_id_bot` to the group and send `/getid`. The group ID will be displayed in the format `-100xxxxxxxxxx`, which is your LOG_GROUP_ID. Or keep it as `me` (will clutter your Saved Messages).
+*   `PORT`: Application port (default: 8091).
+*   `TG_UPLOAD_THREADS`: (Optional) Concurrent upload threads per part. Default: `2`.
+*   `TG_DOWNLOAD_PREFETCH`: (Optional) Number of 1MB chunks prefetched in parallel while streaming or downloading. Default: `4`, capped at `16`. Lower it to `2` if a small Bot Pool serving many concurrent viewers triggers `FLOOD_WAIT`; raising it only helps when the Bot Pool is large enough.
+*   `BOT_TOKENS`: **No longer supported via the .env file**. Instead, you can easily configure and manage secondary bots (Bot Pool) dynamically and securely via the *Bot Pool Settings* section in the Admin Settings dashboard within the Web UI to maximize speeds.
+*   `DATABASE_DRIVER`: `sqlite`, `mysql`, or `postgres`. Default: `sqlite`.
+*   `DATABASE_PATH`: (Optional) Path to the SQLite database file (default: `database.db`).
+*   `DATABASE_DSN`: Required for MySQL/Postgres.
+    *   Example MySQL: `user:pass@tcp(127.0.0.1:3306)/telecloud?parseTime=true&charset=utf8mb4`
+    *   Example Postgres: `postgres://user:pass@127.0.0.1:5432/telecloud?sslmode=disable`
+*   `TELECLOUD_MASTER_KEY`: (Optional) 32-byte master key used to encrypt sessions and sensitive settings. If empty, automatically generated and saved to `master.key` in your data directory. **Extremely important, back it up separately from the database.**
+*   `LISTEN_ADDR`: (Optional) The IP address the application binds to. Defaults to `0.0.0.0` (binds to all interfaces for remote setup accessibility). You can explicitly set this (e.g., `127.0.0.1` to restrict access to localhost only or place it behind Cloudflare Tunnel, Nginx, or Tailscale).
+*   `THUMBS_DIR`: Directory for thumbnails (default: `./static/thumbs`).
+*   `TEMP_DIR`: Path for temporary file chunks (default: `./temp`).
+*   `PROXY_URL`: MTProto proxy, supports HTTP and SOCKS5 (e.g. `socks5://127.0.0.1:1080`).
+*   `FFMPEG_PATH`: Path to FFmpeg. Set to `disabled` to skip thumbnails.
+*   `YTDLP_PATH`: Path to yt-dlp. Set to `disabled` to skip URL downloads.
+*   `TORRENT_PATH`: Path to aria2c. Set to `disabled` to disable Torrent support.
+*   `S3_CORS_ALLOWED_ORIGINS`: (Optional) Comma-separated list of origins allowed to access the S3 API via CORS (e.g., `https://app.example.com,http://localhost:3000`). If left blank or set to `*` (or `0.0.0.0`), all origins are allowed.
+
+
+**Priority Note**: Variables in `.env` **override** any settings in the database.
+
+### 2. Tuning `TG_DOWNLOAD_PREFETCH`
+
+When streaming video or downloading a file, TeleCloud reads ahead a number of 1MB chunks past the read cursor instead of waiting for the current chunk to finish before requesting the next one. `TG_DOWNLOAD_PREFETCH` controls how many.
+
+It affects **every** download path: Web streaming, share links, the CBZ/EPUB readers, **WebDAV**, and the **S3 API**.
+
+**Memory usage**
+
+The read-ahead buffer is hard-capped and **does not grow with file size** (each chunk is released as soon as it is consumed). At the default of `4`:
+
+| Component | Memory |
+| :--- | :--- |
+| Per download stream | ~4 MB (`TG_DOWNLOAD_PREFETCH` × 1MB) |
+| Per stream, while crossing a part boundary | ~8 MB (briefly) |
+| Shared server-wide chunk cache | 128 MB (fixed) |
+| Total in-flight read-ahead, server-wide | 32 MB max |
+
+As an example, 40 concurrent viewers use roughly 300–450 MB of RAM.
+
+**Recommended values**
+
+| Situation | Value |
+| :--- | :--- |
+| Default, fine for most setups | `4` |
+| Low-RAM VPS (≤ 1GB) or many concurrent viewers | `2` |
+| Logs show frequent `FLOOD_WAIT` errors | `2` |
+| Large Bot Pool (5+ bots) on a fast connection | `8` |
+
+Raising the value **only helps when the Bot Pool is large enough**: read-ahead requests are spread across bots, so with a single account a higher value causes `FLOOD_WAIT` rather than extra speed. The system caps it at `16`.
+
+> **Note**: With a Bot Pool, large files are split into 500MB parts, so the ~8 MB per-stream figure above is the common case for long videos.
+
+### 3. Nginx Configuration (Reverse Proxy)
+
+Optimized template for streaming and large uploads:
+
+```nginx
+server {
+    listen 80;
+    server_name your.domain.com;
+
+    # Important: allow unlimited large file uploads
+    client_max_body_size 0;
+
+    location / {
+        proxy_pass http://127.0.0.1:8091;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Support Range requests for streaming
+        proxy_set_header Range $http_range;
+        proxy_set_header If-Range $http_if_range;
+
+        # Disable buffering for large uploads and smoother streaming
+        proxy_request_buffering off;
+        proxy_buffering off;
+
+        proxy_read_timeout 3600s;
+    }
+
+    # WebSocket support
+    location /api/ws {
+        proxy_pass http://127.0.0.1:8091/api/ws;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+    }
+
+    # S3 API Support (signature verification relaxed for 100% client compatibility)
+    # Works with every S3 client (Rclone, Cyberduck, Infuse, etc.) behind any proxy/Cloudflare.
+    location /s3 {
+        # Using $http_host passes the original Host header correctly
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Disable buffering so large S3 transfers are stable
+        proxy_request_buffering off;
+        proxy_buffering off;
+        client_max_body_size 0;
+
+        # Crucially: DO NOT add a trailing slash '/' at the end of proxy_pass!
+        # A trailing slash triggers Nginx URI normalization, which decodes special
+        # characters (%2F) and strips the '/s3' prefix, breaking the S3 signature.
+        proxy_pass http://127.0.0.1:8091;
+    }
+}
+```
 
 ---
 
@@ -126,118 +253,6 @@ server {
         # Cực kỳ quan trọng: KHÔNG THÊM dấu gạch chéo '/' ở cuối proxy_pass!
         # Việc thêm dấu gạch chéo cuối sẽ kích hoạt tính năng chuẩn hóa URI của Nginx,
         # làm giải mã ký tự đặc biệt %2F và cắt bỏ tiền tố /s3 dẫn tới sai chữ ký.
-        proxy_pass http://127.0.0.1:8091;
-    }
-}
-```
-
----
-
-## 🇺🇸 English
-
-### 1. .env File (Environment Variables)
-
-Copy `env.example` to `.env` in the binary directory and fill in your details:
-
-*   `API_ID` & `API_HASH`: **Already embedded by default in all official Binary and Docker Image releases**. General users **DO NOT NEED TO CONFIGURE** these and can log in immediately. These options are strictly for Developers or Advanced Users who wish to compile from source or use their own custom API credentials (via the *Advanced settings* section in Web Setup or via `-ldflags` during build). No longer supported in the `.env` file.
-*   `LOG_GROUP_ID`: (Optional) ID of storage group or `me`. If empty, you can configure via Web Setup.
-    *   **How to get LOG_GROUP_ID**: Create a new Telegram group, make sure to enable "Chat History" in the group settings, add bot `@get_all_telegram_id_bot` to the group and send `/getid`. The group ID will be displayed in the format `-100xxxxxxxxxx`, which is your LOG_GROUP_ID. Or keep it as `me` (will clutter your Saved Messages).
-*   `PORT`: Application port (default: 8091).
-*   `TG_UPLOAD_THREADS`: (Optional) Concurrent upload threads per part. Default: `2`.
-*   `TG_DOWNLOAD_PREFETCH`: (Optional) Number of 1MB chunks prefetched in parallel while streaming or downloading. Default: `4`, capped at `16`. Lower it to `2` if a small Bot Pool serving many concurrent viewers triggers `FLOOD_WAIT`; raising it only helps when the Bot Pool is large enough.
-*   `BOT_TOKENS`: **No longer supported via the .env file**. Instead, you can easily configure and manage secondary bots (Bot Pool) dynamically and securely via the *Bot Pool Settings* section in the Admin Settings dashboard within the Web UI to maximize speeds.
-*   `DATABASE_DRIVER`: `sqlite`, `mysql`, or `postgres`. Default: `sqlite`.
-*   `DATABASE_DSN`: Required for MySQL/Postgres.
-    *   Example MySQL: `user:pass@tcp(127.0.0.1:3306)/telecloud?parseTime=true&charset=utf8mb4`
-    *   Example Postgres: `postgres://user:pass@127.0.0.1:5432/telecloud?sslmode=disable`
-*   `TELECLOUD_MASTER_KEY`: (Optional) 32-byte master key used to encrypt sessions and sensitive settings. If empty, automatically generated and saved to `master.key` in your data directory. **Extremely important, back it up separately from the database.**
-*   `LISTEN_ADDR`: (Optional) The IP address the application binds to. Defaults to `0.0.0.0` (binds to all interfaces for remote setup accessibility). You can explicitly set this (e.g., `127.0.0.1` to restrict access to localhost only or place it behind Cloudflare Tunnel, Nginx, or Tailscale).
-*   `THUMBS_DIR`: Directory for thumbnails (default: `./static/thumbs`).
-*   `TEMP_DIR`: Path for temporary file chunks (default: `./temp`).
-*   `PROXY_URL`: MTProto proxy, supports HTTP and SOCKS5.
-*   `FFMPEG_PATH`: Path to FFmpeg. Set to `disabled` to skip thumbnails.
-*   `YTDLP_PATH`: Path to yt-dlp. Set to `disabled` to skip URL downloads.
-*   `TORRENT_PATH`: Path to aria2c. Set to `disabled` to disable Torrent support.
-*   `S3_CORS_ALLOWED_ORIGINS`: (Optional) Comma-separated list of origins allowed to access the S3 API via CORS (e.g., `https://app.example.com,http://localhost:3000`). If left blank or set to `*` (or `0.0.0.0`), all origins are allowed.
-
-
-**Priority Note**: Variables in `.env` **override** any settings in the database.
-
-### 2. Tuning `TG_DOWNLOAD_PREFETCH`
-
-When streaming video or downloading a file, TeleCloud reads ahead a number of 1MB chunks past the read cursor instead of waiting for the current chunk to finish before requesting the next one. `TG_DOWNLOAD_PREFETCH` controls how many.
-
-It affects **every** download path: Web streaming, share links, the CBZ/EPUB readers, **WebDAV**, and the **S3 API**.
-
-**Memory usage**
-
-The read-ahead buffer is hard-capped and **does not grow with file size** (each chunk is released as soon as it is consumed). At the default of `4`:
-
-| Component | Memory |
-| :--- | :--- |
-| Per download stream | ~4 MB (`TG_DOWNLOAD_PREFETCH` × 1MB) |
-| Per stream, while crossing a part boundary | ~8 MB (briefly) |
-| Shared server-wide chunk cache | 128 MB (fixed) |
-| Total in-flight read-ahead, server-wide | 32 MB max |
-
-As an example, 40 concurrent viewers use roughly 300–450 MB of RAM.
-
-**Recommended values**
-
-| Situation | Value |
-| :--- | :--- |
-| Default, fine for most setups | `4` |
-| Low-RAM VPS (≤ 1GB) or many concurrent viewers | `2` |
-| Logs show frequent `FLOOD_WAIT` errors | `2` |
-| Large Bot Pool (5+ bots) on a fast connection | `8` |
-
-Raising the value **only helps when the Bot Pool is large enough**: read-ahead requests are spread across bots, so with a single account a higher value causes `FLOOD_WAIT` rather than extra speed. The system caps it at `16`.
-
-> **Note**: With a Bot Pool, large files are split into 500MB parts, so the ~8 MB per-stream figure above is the common case for long videos.
-
-### 3. Nginx Configuration (Reverse Proxy)
-
-Optimized template for streaming and large uploads:
-
-```nginx
-server {
-    listen 80;
-    server_name your.domain.com;
-    client_max_body_size 0;
-
-    location / {
-        proxy_pass http://127.0.0.1:8091;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_request_buffering off;
-        proxy_buffering off;
-        proxy_read_timeout 3600s;
-    }
-
-    location /api/ws {
-        proxy_pass http://127.0.0.1:8091/api/ws;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-
-    # S3 API Support (Signature verification relaxed for 100% client compatibility)
-    # Supports all S3 clients (Rclone, Cyberduck, Infuse, etc.) seamlessly behind any Proxy/Cloudflare.
-    location /s3 {
-        # Recommended to use $http_host to pass the correct host header
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # Disable buffering to allow stable large S3 uploads
-        proxy_request_buffering off;
-        proxy_buffering off;
-        client_max_body_size 0;
-
-        # Crucial: DO NOT add a trailing slash '/' at the end of proxy_pass!
-        # A trailing slash forces Nginx to decode/normalize URI path (e.g. decodes %2F to /)
-        # and strips the '/s3' prefix, which breaks S3 signature verification.
         proxy_pass http://127.0.0.1:8091;
     }
 }

@@ -7,7 +7,7 @@ on:
     paths:
       - 'docs/**'
       - 'readme.md'
-      - 'readme_en.md'
+      - 'readme_vi.md'
 
 jobs:
   sync-wiki:
@@ -22,16 +22,17 @@ jobs:
         run: |
           mkdir wiki_temp
           cp docs/*.md wiki_temp/
+          # English is the default readme (Home), Vietnamese is Home-VI
           cp readme.md wiki_temp/Home.md
-          cp readme_en.md wiki_temp/Home-EN.md
+          cp readme_vi.md wiki_temp/Home-VI.md
           
-          # Fix image paths to use absolute URLs from the main repo
-          sed -i 's|src="preview/|src="https://raw.githubusercontent.com/dabeecao/telecloud-go/main/preview/|g' wiki_temp/Home.md
-          sed -i 's|src="preview/|src="https://raw.githubusercontent.com/dabeecao/telecloud-go/main/preview/|g' wiki_temp/Home-EN.md
+          # Fix image paths to use absolute URLs from this repository
+          sed -i 's|src="preview/|src="https://raw.githubusercontent.com/${{ github.repository }}/main/preview/|g' wiki_temp/Home.md
+          sed -i 's|src="preview/|src="https://raw.githubusercontent.com/${{ github.repository }}/main/preview/|g' wiki_temp/Home-VI.md
           
           # Fix language toggle links for Wiki structure
-          sed -i 's|(\./readme_en.md)|(Home-EN)|g' wiki_temp/Home.md
-          sed -i 's|(\./readme.md)|(Home)|g' wiki_temp/Home-EN.md
+          sed -i 's|(\./readme_vi.md)|(Home-VI)|g' wiki_temp/Home.md
+          sed -i 's|(\./readme.md)|(Home)|g' wiki_temp/Home-VI.md
           
           # Fix documentation links (remove ./docs/ and .md extension for Wiki)
           sed -i 's|(\./docs/|(|g' wiki_temp/*.md

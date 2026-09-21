@@ -17,7 +17,7 @@ import (
 	"golang.org/x/net/webdav"
 )
 
-// webdavAuthCache lưu kết quả bcrypt để tránh gọi lại mỗi request
+// webdavAuthCache caches bcrypt results so each request does not have to re-hash.
 type authCacheEntry struct {
 	user      string
 	hash      string

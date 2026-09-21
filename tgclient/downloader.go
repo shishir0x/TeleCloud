@@ -88,7 +88,7 @@ var (
 )
 
 func init() {
-	// Dọn dẹp location cache expired mỗi 30 phút
+	// Sweep expired file locations from the cache every 30 minutes.
 	go func() {
 		ticker := time.NewTicker(30 * time.Minute)
 		for range ticker.C {

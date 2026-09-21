@@ -1,6 +1,95 @@
-# 🔌 API Documentation / Tài liệu API
+# 🔌 API Documentation
 
-TeleCloud cung cấp hệ thống HTTP API mạnh mẽ để tích hợp vào các script, ứng dụng bên thứ ba hoặc CI/CD.
+TeleCloud provides a powerful HTTP API for integration with scripts, third-party applications, or CI/CD pipelines.
+
+---
+
+## 🇺🇸 English
+
+### 1. General Information
+- **Base URL**: `http://your-domain.com/api/upload-api`
+- **Authentication**: Bearer token in the header.
+  - Header: `Authorization: Bearer <YOUR_API_KEY>`
+  - Get your key at: **Settings → Upload API** in the web interface.
+
+---
+
+### 2. Endpoints
+
+#### A. Upload a file
+Upload a file directly from your local machine to Telegram.
+- **Endpoint**: `POST /upload`
+- **Content-Type**: `multipart/form-data`
+- **Parameters**:
+  - `file`: (Required) The file to upload.
+  - `path`: (Optional) Destination folder (Default: `/`).
+  - `share`: (Optional) Set to `public` to automatically create a share link after uploading.
+  - `async`: (Optional) Set to `true` to upload in the background (returns a `task_id`).
+
+#### B. Remote upload from a URL
+Download a file from a URL (Direct Link, YouTube, TikTok...) to Telegram.
+- **Endpoint**: `POST /remote`
+- **Content-Type**: `application/json`
+- **Parameters (JSON)**:
+  - `url`: (Required) The URL to download.
+  - `path`: (Optional) Destination folder.
+  - `async`: (Optional) Defaults to `true` for remote uploads.
+
+#### C. Create a share link (Share Path)
+Create a share link for an existing file or folder.
+- **Endpoint**: `POST /share`
+- **Content-Type**: `application/json`
+- **Parameters (JSON)**:
+  - `path`: (Required) Path of the file/folder to share.
+
+#### D. Check task status
+Check the progress of background (async) tasks.
+- **Endpoint**: `GET /tasks/<TASK_ID>`
+
+#### E. Cancel a task
+Stop and remove a running task.
+- **Endpoint**: `DELETE /tasks/<TASK_ID>`
+
+---
+
+### 3. cURL Examples
+
+**Basic upload:**
+```bash
+curl -X POST http://localhost:8091/api/upload-api/upload \
+  -H 'Authorization: Bearer YOUR_KEY' \
+  -F 'file=@/path/to/file.zip' \
+  -F 'path=/'
+```
+
+**Upload and get a share link immediately:**
+```bash
+curl -X POST http://localhost:8091/api/upload-api/upload \
+  -H 'Authorization: Bearer YOUR_KEY' \
+  -F 'file=@/path/to/file.zip' \
+  -F 'share=public'
+```
+
+**Remote upload from a URL:**
+```bash
+curl -X POST http://localhost:8091/api/upload-api/remote \
+  -H 'Authorization: Bearer YOUR_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com/video.mp4", "path": "/", "async": true}'
+```
+
+**Async upload with status check:**
+```bash
+# 1. Start Async Upload
+curl -X POST http://localhost:8091/api/upload-api/upload \
+  -H 'Authorization: Bearer YOUR_KEY' \
+  -F 'file=@/file.zip' \
+  -F 'async=true'
+
+# 2. Check Status
+curl -H 'Authorization: Bearer YOUR_KEY' \
+  http://localhost:8091/api/upload-api/tasks/<TASK_ID>
+```
 
 ---
 
@@ -76,34 +165,4 @@ curl -X POST http://localhost:8091/api/upload-api/remote \
   -H 'Authorization: Bearer YOUR_KEY' \
   -H 'Content-Type: application/json' \
   -d '{"url": "https://example.com/video.mp4", "path": "/", "async": true}'
-```
-
----
-
-## 🇺🇸 English
-
-### 1. General Information
-- **Authentication**: `Authorization: Bearer <YOUR_API_KEY>`
-
-### 2. Endpoints
-
-- `POST /upload`: Upload local file to Telegram.
-- `POST /remote`: Download from URL (YouTube, TikTok, Direct Link) to Telegram.
-- `POST /share`: Create a share link for an existing path.
-- `GET /tasks/<TASK_ID>`: Get async task progress.
-- `DELETE /tasks/<TASK_ID>`: Cancel an active task.
-
-### 3. cURL Examples
-
-**Async Upload with Status Check:**
-```bash
-# 1. Start Async Upload
-curl -X POST http://localhost:8091/api/upload-api/upload \
-  -H 'Authorization: Bearer YOUR_KEY' \
-  -F 'file=@/file.zip' \
-  -F 'async=true'
-
-# 2. Check Status
-curl -H 'Authorization: Bearer YOUR_KEY' \
-  http://localhost:8091/api/upload-api/tasks/<TASK_ID>
 ```
