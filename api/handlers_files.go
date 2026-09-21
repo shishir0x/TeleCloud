@@ -215,6 +215,25 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 		if files[i].SharePassword != nil && *files[i].SharePassword != "" {
 			files[i].HasSharePassword = true
 		}
+
+		if !files[i].IsFolder && !files[i].HasThumb && files[i].MessageID != nil {
+			mimeType := ""
+			if files[i].MimeType != nil {
+				mimeType = *files[i].MimeType
+			}
+			if mimeType == "" {
+				mimeType = mime.TypeByExtension(filepath.Ext(files[i].Filename))
+			}
+			ext := strings.ToLower(filepath.Ext(files[i].Filename))
+			isMedia := strings.HasPrefix(mimeType, "image/") ||
+				strings.HasPrefix(mimeType, "video/") ||
+				strings.HasPrefix(mimeType, "audio/") ||
+				ext == ".epub" || ext == ".cbz"
+
+			if isMedia {
+				tgclient.QueueThumbnailGeneration(int64(files[i].ID), h.cfg)
+			}
+		}
 	}
 	var storageUsed int64
 	if isAdmin {
@@ -1165,7 +1184,21 @@ func (h *Handler) handleGetThumb(c *gin.Context) {
 	}
 	var item database.File
 	username := c.GetString("username")
-	if err := database.RODB.Get(&item, "SELECT path, thumb_path FROM files WHERE id = ? AND owner = ?", id, username); err != nil || item.ThumbPath == nil {
+	isAdmin := c.GetBool("is_admin")
+
+	var queryErr error
+	if isAdmin {
+		queryErr = database.RODB.Get(&item, "SELECT path, thumb_path FROM files WHERE id = ? AND deleted_at IS NULL", id)
+	} else {
+		prefix := "/" + username
+		queryErr = database.RODB.Get(&item, "SELECT path, thumb_path FROM files WHERE id = ? AND (owner = ? OR path = ? OR path LIKE ?) AND deleted_at IS NULL", id, username, prefix, prefix+"/%")
+	}
+
+	if queryErr != nil || item.ThumbPath == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if _, err := os.Stat(*item.ThumbPath); err != nil {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
@@ -1180,7 +1213,17 @@ func (h *Handler) handleStreamFile(c *gin.Context) {
 	}
 	var item database.File
 	username := c.GetString("username")
-	if err := database.RODB.Get(&item, "SELECT * FROM files WHERE id = ? AND owner = ?", id, username); err != nil || item.IsFolder {
+	isAdmin := c.GetBool("is_admin")
+
+	var queryErr error
+	if isAdmin {
+		queryErr = database.RODB.Get(&item, "SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", id)
+	} else {
+		prefix := "/" + username
+		queryErr = database.RODB.Get(&item, "SELECT * FROM files WHERE id = ? AND (owner = ? OR path = ? OR path LIKE ?) AND deleted_at IS NULL", id, username, prefix, prefix+"/%")
+	}
+
+	if queryErr != nil || item.IsFolder {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
@@ -1198,7 +1241,17 @@ func (h *Handler) handleDownloadFile(c *gin.Context) {
 	}
 	var item database.File
 	username := c.GetString("username")
-	if err := database.RODB.Get(&item, "SELECT * FROM files WHERE id = ? AND owner = ?", id, username); err != nil {
+	isAdmin := c.GetBool("is_admin")
+
+	var queryErr error
+	if isAdmin {
+		queryErr = database.RODB.Get(&item, "SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", id)
+	} else {
+		prefix := "/" + username
+		queryErr = database.RODB.Get(&item, "SELECT * FROM files WHERE id = ? AND (owner = ? OR path = ? OR path LIKE ?) AND deleted_at IS NULL", id, username, prefix, prefix+"/%")
+	}
+
+	if queryErr != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 		return
 	}
@@ -1834,8 +1887,17 @@ func (h *Handler) handleRegenerateThumb(c *gin.Context) {
 	}
 
 	username := c.GetString("username")
+	isAdmin := c.GetBool("is_admin")
 	var item database.File
-	if err := database.RODB.Get(&item, "SELECT id, is_folder FROM files WHERE id = ? AND owner = ?", id, username); err != nil {
+	var queryErr error
+	if isAdmin {
+		queryErr = database.RODB.Get(&item, "SELECT id, is_folder FROM files WHERE id = ? AND deleted_at IS NULL", id)
+	} else {
+		prefix := "/" + username
+		queryErr = database.RODB.Get(&item, "SELECT id, is_folder FROM files WHERE id = ? AND (owner = ? OR path = ? OR path LIKE ?) AND deleted_at IS NULL", id, username, prefix, prefix+"/%")
+	}
+
+	if queryErr != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
 	}

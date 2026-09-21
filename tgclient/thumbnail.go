@@ -25,7 +25,10 @@ import (
 	"telecloud/utils"
 
 	"github.com/google/uuid"
+	_ "golang.org/x/image/bmp"
 	"golang.org/x/image/draw"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 type TempStreamInfo struct {
@@ -91,6 +94,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 	// 3. Define the output thumbnail name and path
 	thumbName := strings.ReplaceAll(uuid.New().String(), "-", "") + ".jpg"
 	thumbPath := filepath.Join(cfg.ThumbsDir, thumbName)
+	_ = os.MkdirAll(filepath.Dir(thumbPath), 0755)
 
 	log.Printf("[Thumbnail] Generating thumbnail for file %s (ID: %d, Mime: %s)", item.Filename, fileID, actualMime)
 
@@ -367,3 +371,47 @@ func sortZipFiles(files []*zip.File) {
 		return len(files[i].Name) < len(files[j].Name)
 	})
 }
+
+var (
+	thumbQueueOnce sync.Once
+	thumbQueueChan chan int64
+	thumbPending   sync.Map
+)
+
+func initThumbQueue(cfg *config.Config) {
+	thumbQueueChan = make(chan int64, 1000)
+	for i := 0; i < 2; i++ {
+		go func() {
+			for fid := range thumbQueueChan {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[Thumbnail Worker] Recovered from panic for file ID %d: %v", fid, r)
+						}
+						thumbPending.Delete(fid)
+					}()
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					defer cancel()
+					_, _ = RegenerateFileThumbnail(ctx, fid, cfg)
+				}()
+			}
+		}()
+	}
+}
+
+func QueueThumbnailGeneration(fileID int64, cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	thumbQueueOnce.Do(func() {
+		initThumbQueue(cfg)
+	})
+	if _, loaded := thumbPending.LoadOrStore(fileID, true); !loaded {
+		select {
+		case thumbQueueChan <- fileID:
+		default:
+			thumbPending.Delete(fileID)
+		}
+	}
+}
+

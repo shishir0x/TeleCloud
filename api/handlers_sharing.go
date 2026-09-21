@@ -259,6 +259,10 @@ func (h *Handler) handleGetSharedThumb(c *gin.Context) {
 		c.AbortWithStatus(http.StatusForbidden)
 		return
 	}
+	if _, err := os.Stat(*item.ThumbPath); err != nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
 	c.File(*item.ThumbPath)
 }
 
@@ -270,20 +274,15 @@ func (h *Handler) resolveSharedFileInFolder(c *gin.Context, token string, id int
 		return shareItem, fmt.Errorf("not_found")
 	}
 
+	if !h.checkShareAuth(c, shareItem) {
+		return shareItem, fmt.Errorf("forbidden")
+	}
+
 	if !shareItem.IsFolder {
-		// Single shared file case: verify ID match to prevent unauthorized indexing
 		if id != shareItem.ID {
 			return shareItem, fmt.Errorf("forbidden")
 		}
-		if !h.checkShareAuth(c, shareItem) {
-			return shareItem, fmt.Errorf("unauthorized")
-		}
 		return shareItem, nil
-	}
-
-	// Folder share case
-	if !h.checkShareAuth(c, shareItem) {
-		return shareItem, fmt.Errorf("unauthorized")
 	}
 
 	basePrefix := shareItem.Path + "/" + shareItem.Filename
@@ -370,6 +369,11 @@ func (h *Handler) handleGetSharedFileThumbInFolder(c *gin.Context) {
 		} else {
 			c.AbortWithStatus(http.StatusNotFound)
 		}
+		return
+	}
+
+	if _, err := os.Stat(*item.ThumbPath); err != nil {
+		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 

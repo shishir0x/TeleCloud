@@ -865,14 +865,13 @@ func ProcessCompleteUpload(ctx context.Context, filePath, filename, path, mimeTy
 
 	success = true
 
-	UpdateTaskWithFileID(taskID, "done", 100, "", fileID, uniqueFilename, owner)
+	// Generate local thumbnail before exiting so temp file is not removed prematurely by caller
+	localThumb := utils.CreateLocalThumbnail(filePath, mimeType, cfg.FFMPEGPath)
+	if localThumb != nil {
+		database.DB.Exec("UPDATE files SET thumb_path = ? WHERE id = ?", *localThumb, fileID)
+	}
 
-	go func() {
-		localThumb := utils.CreateLocalThumbnail(filePath, mimeType, cfg.FFMPEGPath)
-		if localThumb != nil {
-			database.DB.Exec("UPDATE files SET thumb_path = ? WHERE id = ?", *localThumb, fileID)
-		}
-	}()
+	UpdateTaskWithFileID(taskID, "done", 100, "", fileID, uniqueFilename, owner)
 
 	select {
 	case <-time.After(1000 * time.Millisecond):

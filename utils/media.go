@@ -15,7 +15,10 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	_ "golang.org/x/image/bmp"
 	"golang.org/x/image/draw"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 func FormatBytes(b int64) string {
@@ -52,6 +55,8 @@ func CreateLocalThumbnail(sourcePath, mimeType, ffmpegPath string) *string {
 	thumbName := strings.ReplaceAll(uuid.New().String(), "-", "") + ".jpg"
 	thumbPath := filepath.Join(ThumbsDir, thumbName)
 
+	_ = os.MkdirAll(filepath.Dir(thumbPath), 0755)
+
 	if ext == ".epub" || ext == ".cbz" || actualMime == "application/epub+zip" || actualMime == "application/x-cbz" {
 		if path := extractZipCover(sourcePath, thumbPath); path != nil {
 			return path
@@ -61,6 +66,21 @@ func CreateLocalThumbnail(sourcePath, mimeType, ffmpegPath string) *string {
 	if strings.HasPrefix(actualMime, "image/") {
 		if err := resizeImage(sourcePath, thumbPath); err == nil {
 			return &thumbPath
+		}
+		if ffmpegPath != "disabled" && ffmpegPath != "disable" && ffmpegPath != "" {
+			FFmpegSemaphore <- struct{}{}
+			defer func() { <-FFmpegSemaphore }()
+			cmd := exec.Command(
+				ffmpegPath, "-y", "-i", sourcePath,
+				"-vframes", "1",
+				"-vf", "scale=320:-1", thumbPath,
+			)
+			cmd.Env = os.Environ()
+			if err := cmd.Run(); err == nil {
+				if _, err := os.Stat(thumbPath); err == nil {
+					return &thumbPath
+				}
+			}
 		}
 	} else if strings.HasPrefix(actualMime, "video/") {
 		if ffmpegPath == "disabled" {
