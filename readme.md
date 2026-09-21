@@ -2,23 +2,21 @@
 
 <div align="center">
 
-🇺🇸 English | [🇻🇳 Tiếng Việt](./readme_vi.md)
-
 **[📢 Support Group](https://t.me/+p-d0qfGRbX4wNzJl)**
-*Join the group to discuss and get support*
+*Join the community to discuss features, get help, and stay updated*
 
 </div>
 
-**TeleCloud** is a project that allows you to use Telegram’s nearly unlimited storage capacity to store and manage files. Completely rewritten in Golang for excellent performance and low memory usage.
+**TeleCloud** is a self-hosted cloud storage and streaming platform that turns Telegram’s high-capacity infrastructure into your personal, virtually unlimited cloud drive. Completely engineered in Go for blazing-fast throughput, minimal CPU footprint, and ultra-low memory consumption.
 
 > [!TIP]
-> **Mobile Client Version:** The project now has a mobile client available, [download & see guide here](./docs/MobileClient.md).
+> **Mobile Client Version:** A dedicated mobile client is available. Check out the [Mobile Client Guide](./docs/MobileClient.md).
 
 > [!IMPORTANT]
-> **Changed since version 3.7.0**
-> Starting from v3.7.0, **App ID & API Hash** and **Bot Tokens (Bot Pool)** are no longer configured in the `.env` file — everything is managed directly inside the **application's Settings UI**:
-> - 🔑 **App ID & API Hash**: During the initial setup, **just leave it as default and click Continue** — the app already has the developer credentials built in. Only change this if you are an **advanced user / developer** who wants to use their own API credentials.
-> - 🤖 **Bot Tokens (Bot Pool)**: Add, edit, or remove bots directly in **Admin Panel → Settings → Bot Pool** — no server restart required.
+> **Configuration in Version 3.7.0+**
+> Starting with v3.7.0, **App ID & API Hash** and **Bot Tokens (Bot Pool)** are managed entirely through the **application's Settings UI**:
+> - 🔑 **App ID & API Hash**: During initial setup, simply leave the defaults as provided and click **Continue** — the app includes built-in developer credentials. Only change this if you are an advanced user or developer using custom Telegram API credentials.
+> - 🤖 **Bot Tokens (Bot Pool)**: Add, modify, or remove bots dynamically in **Admin Panel → Settings → Bot Pool** without needing to restart the server.
 
 ---
 
@@ -39,33 +37,33 @@
 
 ## ✨ Features
 
-* 📁 **Unlimited Storage**: Store files directly on Telegram with **no size limits** (Automatically splits large files into chunks from 500MB to 4GB).
-* 🎬 **Media & Subtitles Streaming**: Stream videos and music directly in the dashboard and shared links. Seamlessly auto-scans and loads subtitles (.srt, .vtt, .ass) with matching names, or manually uploads external subtitles from your computer. Supports convenient shortcut keys (`Space` to play/pause, `Left/Right Arrows` to seek 5s, `Up/Down Arrows` for volume, `N` for next track, and `P` for previous track).
-* 📚 **EPUB, Comic & PDF Readers**: Integrates custom, high-fidelity online readers for **EPUB** e-books, **CBZ** comic books (Webtoon scroll mode, lazy-loading, automatic progress preservation), and **PDF** documents directly within the browser without downloading.
-* 🔗 **Flexible Sharing**: Supports normal or direct download links (Direct Link) for both files and **folders**.
-* ⚡ **On-The-Fly Folder Download**: Supports high-performance, diskless server-side ZIP streaming to download entire directories instantly without using any server disk storage (exclusively restricted to logged-in users for optimal efficiency).
-* 🗂️ **Intuitive Management**: File Browser with **Grid** and **List** view modes.
-* ⬆️ **High Performance**: Multi-threaded and chunked uploads for maximum speed and stability.
-* 📂 **WebDAV Support**: Mount TeleCloud as a network drive on Windows, macOS, and Linux.
-* 🪣 **S3 API Compatibility**: Provides an S3-compatible API (via gofakes3) to integrate with third-party clients (Rclone, Cyberduck, Infuse, etc.) supporting secure SigV4/SigV2 signature verification and Range requests for smooth video streaming.
-* 🔌 **Upload API**: Remote file uploads via HTTP API for script or CI/CD integration.
-* 📥 **URL, Media & Telegram (`t.me`) Downloader**: Download files from URLs and Media (YouTube, TikTok, Facebook...) using **yt-dlp**; especially supports resolving and **downloading restricted files directly** from Telegram links (`t.me` or `tg://`) via the integrated Userbot.
-* ⚡ **Background Tasks**: Background URL downloads with real-time progress notifications.
-* 🧲 **Torrent Support**: Download Torrents and Magnet links directly to Telegram via **aria2c**.
-* 👥 **Multi-user**: Support for child accounts with isolated storage spaces (Virtual Path).
-* 🤖 **Multi-Bot (Bot Pool) & Personal File Receipt**: Distribute workloads across multiple secondary bots to maximize speed and reliability. Also allows each user (including child accounts) to link their personal Telegram account to instantly upload and organize files sent directly to any bot in the Bot Pool into their own storage workspace.
-* 🔐 **Passkey Security**: Biometric login (Fingerprint, FaceID) or security keys (WebAuthn).
-* 🗄️ **Multi-Database**: Supports **SQLite**, **MySQL**, and **PostgreSQL** for enterprise-scale needs.
-* 🗑️ **Trash Bin**: Recover deleted files and protect data from accidental removal.
-* 🔒 **Protected Shares**: Set password protection for shared files and folders.
-* 🛡️ **Auto Backup**: Daily automated backups of database and thumbnails to Telegram.
-* 🌐 **Multi-language**: Supports English (default), Vietnamese, Chinese, Japanese, Russian, and more.
+* 📁 **Virtually Unlimited Storage**: Store files directly on Telegram with **no file size limits** (automatically chunks large files from 500MB to 4GB with smart memory pooling).
+* 📑 **Modern In-Browser PDF Reader**: Rich PDF viewing experience featuring **default vertical continuous scrolling**, lazy-rendered pages with true aspect-ratio placeholders, outline/TOC navigation, fit-width/fit-height zoom, pinch-to-zoom gestures, smooth auto-scrolling, and direct printing.
+* 📚 **EPUB & Comic (CBZ/CBR) Readers**: Built-in readers for EPUB books (chapters, custom themes, typography settings) and comics (Webtoon continuous scroll, single/double page view, progress preservation).
+* 🎬 **Media Streaming & Subtitles**: Stream high-definition video and audio files in real time. Automatically scans and loads matching subtitle tracks (`.srt`, `.vtt`, `.ass`) or lets you upload custom subtitles. Includes convenient keyboard shortcuts (`Space` to play/pause, `Left/Right` to seek 5s, `Up/Down` for volume, `N`/`P` for next/previous track).
+* 🖼️ **Layered Thumbnails & Fast Previews**: Native Telegram thumbnail prefetching with in-flight deduplication and modern FFmpeg generation, layered seamlessly over file type icons with smooth fade-in transitions.
+* 🔗 **Flexible File & Folder Sharing**: Generate secure public or private sharing links with optional password protection and expiration controls. Supports direct download links for single files and entire folders.
+* ⚡ **On-The-Fly Folder Download**: High-performance, diskless server-side ZIP streaming allows downloading entire directories on demand without consuming server disk space.
+* 🗂️ **Intuitive Management**: Modern web dashboard with both **Grid** and **List** view modes, instant file search, and sorting.
+* 📂 **WebDAV Drive Mounting**: Mount TeleCloud directly as a network drive on Windows, macOS, Linux, and mobile file managers.
+* 🪣 **S3 API Compatibility**: Built-in S3-compatible API (SigV4/SigV2 authentication, HTTP Range requests) to integrate with third-party software such as Rclone, Cyberduck, and Infuse.
+* 🔌 **RESTful Upload API**: Programmatically upload files via HTTP API for automated scripts, CLI tools, and CI/CD pipelines.
+* 📥 **URL, Social Media & Telegram (`t.me`) Downloader**: Download directly from URLs and video platforms (YouTube, TikTok, Facebook, etc.) via **yt-dlp**; download restricted media and files directly from Telegram links (`t.me` or `tg://`) using the integrated Userbot.
+* 🧲 **Integrated Torrent Downloader**: Download torrents and magnet links directly into your cloud storage using **aria2c**.
+* ⚡ **Asynchronous Background Tasks**: Non-blocking download and processing engine with real-time WebSocket progress notifications.
+* 🤖 **Bot Pool & Personal File Receipt**: Scale throughput across multiple secondary Telegram bots to bypass rate limits. Users can also connect their personal Telegram account so files sent directly to any pool bot are automatically saved to their personal workspace.
+* 👥 **Multi-User System**: Manage independent sub-accounts with isolated storage directories, permission controls, and quota limits.
+* 🔐 **Passkey & WebAuthn Security**: Passwordless biometric authentication using Fingerprint, Face ID, or hardware security keys.
+* 🗄️ **Multi-Database Support**: Out-of-the-box support for **SQLite**, **MySQL**, and **PostgreSQL** for enterprise workloads.
+* 🗑️ **Trash Bin & Recovery**: Safely recover deleted files and protect your data against accidental removal.
+* 🛡️ **Automated Daily Backups**: Scheduled automatic backups of databases and metadata directly to Telegram.
+* 🌐 **Internationalization**: Fully localized in English by default, with built-in multi-language translation support.
 
 ---
 
 ## 🚀 Quick Start
 
-Use the automated script — the easiest way to get started:
+The fastest way to install and run TeleCloud is using the automated setup script:
 
 ### Linux / Termux / macOS / Raspberry Pi
 ```bash
@@ -77,61 +75,63 @@ Download [**`auto-install-en.bat`**](https://raw.githubusercontent.com/dabeecao/
 
 ---
 
-## 📖 Detailed Documentation (Wiki)
+## 📖 Documentation & Guides
 
-For configuration details and alternative installation methods, please refer to the documentation:
+For in-depth guides, configuration parameters, and custom setups:
 
-*   [🛠️ **Installation Guide**](./docs/Installation.md) (Binary, Windows, Linux...)
-*   [⚙️ **Configuration Guide**](./docs/Configuration.md) (.env, Nginx Proxy...)
-*   [🐳 **Docker Deployment**](./docs/Docker.md) (Docker Run, Compose)
-*   [📱 **Mobile Client Guide**](./docs/MobileClient.md) (Installation & Connection)
-*   [🔌 **API Documentation**](./docs/API.md) (Upload API Guide)
-*   [🔐 **Security Policy**](./docs/Security.md) (Encryption, Hardening & Warnings)
-*   [🛠️ **Development & Localization**](./docs/Development.md) (Build from source, Contribute)
+* [🛠️ **Installation Guide**](./docs/Installation.md) (Binary, Windows, Linux, systemd service)
+* [⚙️ **Configuration Guide**](./docs/Configuration.md) (Environment variables, Nginx reverse proxy, SSL)
+* [🐳 **Docker Deployment Guide**](./docs/Docker.md) (Docker Compose, container tuning)
+* [📱 **Mobile Client Guide**](./docs/MobileClient.md) (App download, pairing, and features)
+* [🔌 **API Documentation**](./docs/API.md) (REST endpoints, Upload API, authentication)
+* [🔐 **Security Policy**](./docs/Security.md) (Encryption standards, hardening recommendations)
+* [🛠️ **Development & Build Guide**](./docs/Development.md) (Building from source, contributing)
 
 ---
 
-## 🔐 Security
+## 🔐 Security Architecture
 
-TeleCloud is designed with optimized security standards (including AES-256-GCM encryption for sensitive data, systemd hardening, WebDAV rate limiting, SSRF/DNS Rebinding mitigation, CSP, etc.).
+TeleCloud follows strict security best practices:
+- AES-256-GCM authenticated encryption for sensitive credentials and tokens
+- WebAuthn / FIDO2 passkey support for phishing-resistant logins
+- WebDAV rate-limiting, CSRF token verification, and hardened Content Security Policies (CSP)
+- SSRF and DNS Rebinding protection on remote URL download handlers
+- Ephemeral, diskless streaming architecture for reduced attack surface
 
-For more detailed information regarding security architecture, operational recommendations, and known limitations, please refer to:
-👉 [**Security Policy & Hardening Guide**](./docs/Security.md)
+For full details and deployment recommendations, read the [**Security Policy & Hardening Guide**](./docs/Security.md).
 
 ---
 
 ## ⚠️ Terms of Use & Disclaimer
- 
-**TeleCloud** is developed for storing and managing legitimate personal files. We are not responsible for any content uploaded by users or violations of Telegram’s terms of service. Users are **fully responsible** for their own actions.
 
-The project is provided **“as-is”**, without any guarantees of stability or security.
+**TeleCloud** is developed for legitimate personal file storage, media management, and backup purposes. The project developers are not responsible for any content uploaded by users or any violations of Telegram's Terms of Service. Users bear full and sole responsibility for how they use this software.
+
+This project is distributed on an **“as-is”** basis, without warranties or guarantees of any kind.
 
 ---
 
-## 🙏 Credits
+## 🙏 Credits & Open-Source Ecosystem
 
-This project uses amazing libraries:
-* [gotd/td](https://github.com/gotd/td): Telegram client (MTProto API)
-* [Gin](https://github.com/gin-gonic/gin): High-performance HTTP web framework
-* [AlpineJS](https://github.com/alpinejs/alpine): Minimal JS framework
-* [TailwindCSS](https://github.com/tailwindlabs/tailwindcss): Utility-first CSS framework
-* [plyr](https://github.com/sampotts/plyr): HTML5 media player
-* [Artplayer.js](https://github.com/zhw2590582/ArtPlayer): Modern and full-featured HTML5 video player.
-* [PDF.js](https://github.com/mozilla/pdf.js): HTML5 PDF reader and viewer.
-* [Prism.js](https://github.com/PrismJS/prism): Lightweight, extensible syntax highlighter.
-* [FontAwesome](https://fontawesome.com): The world's most popular icon set.
-* [Bun](https://bun.com): Fast JavaScript runtime & toolkit (build toolchain).
-* [yt-dlp](https://github.com/yt-dlp/yt-dlp): Audio/video downloader.
-* [aria2](https://github.com/aria2/aria2): Multi-protocol download utility.
-* [Google Fonts (Nunito)](https://fonts.google.com/specimen/Nunito): Modern sans-serif typeface.
+TeleCloud is powered by these open-source projects and libraries:
+* [gotd/td](https://github.com/gotd/td): High-performance native Go Telegram client (MTProto API)
+* [Gin](https://github.com/gin-gonic/gin): HTTP web framework for Go
+* [AlpineJS](https://github.com/alpinejs/alpine): Reactive, lightweight client-side framework
+* [TailwindCSS](https://github.com/tailwindlabs/tailwindcss): Utility-first styling framework
+* [Artplayer.js](https://github.com/zhw2590582/ArtPlayer): HTML5 video player with chapter & subtitle support
+* [PDF.js](https://github.com/mozilla/pdf.js): In-browser PDF rendering engine
+* [plyr](https://github.com/sampotts/plyr): Accessible media player for audio files
+* [Prism.js](https://github.com/PrismJS/prism): Extensible code syntax highlighter
+* [FontAwesome](https://fontawesome.com): Modern iconography
+* [Bun](https://bun.com): Fast JavaScript runtime & asset build toolkit
+* [yt-dlp](https://github.com/yt-dlp/yt-dlp): Media download engine
+* [aria2](https://github.com/aria2/aria2): Multi-protocol torrent & chunk downloader
+* [Google Fonts (Nunito)](https://fonts.google.com/specimen/Nunito): Typography
 
-Thanks to all development teams and **contributors** for providing great tools and efforts for the community.
+Special thanks to all open-source maintainers and community contributors.
 
 <a href="https://github.com/dabeecao/telecloud-go/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=dabeecao/telecloud-go" />
 </a>
-
-**A portion of the project's source code and this readme was referenced and modified by Gemini AI.**
 
 ---
 
