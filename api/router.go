@@ -223,7 +223,9 @@ func SetupRouter(cfg *config.Config, contentFS fs.FS, startTG func(cfg *config.C
 	r.GET("/", h.handleGetIndex)
 	r.HEAD("/", h.handleGetIndex)
 
-	// Private Download
+	// Private Streaming and Download
+	r.GET("/stream/:id", authMiddleware(), h.handleStreamFile)
+	r.GET("/stream/:id/:filename", authMiddleware(), h.handleStreamFile)
 	r.GET("/download/:id", authMiddleware(), h.handleDownloadFile)
 	r.GET("/download/folder/:id", authMiddleware(), h.handleDownloadFolder)
 

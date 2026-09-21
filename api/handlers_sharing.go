@@ -205,9 +205,14 @@ func (h *Handler) handleStreamSharedFile(c *gin.Context) {
 		return
 	}
 
-	if item.MimeType != nil {
+	lowerName := strings.ToLower(item.Filename)
+	if strings.HasSuffix(lowerName, ".pdf") {
+		c.Header("Content-Type", "application/pdf")
+	} else if strings.HasSuffix(lowerName, ".epub") {
+		c.Header("Content-Type", "application/epub+zip")
+	} else if item.MimeType != nil && *item.MimeType != "" && *item.MimeType != "application/octet-stream" {
 		mime := *item.MimeType
-		if strings.HasSuffix(strings.ToLower(item.Filename), ".mkv") {
+		if strings.HasSuffix(lowerName, ".mkv") {
 			mime = "video/webm"
 		}
 		c.Header("Content-Type", mime)
@@ -333,9 +338,14 @@ func (h *Handler) handleStreamSharedFileInFolder(c *gin.Context) {
 		return
 	}
 
-	if item.MimeType != nil {
+	lowerName := strings.ToLower(item.Filename)
+	if strings.HasSuffix(lowerName, ".pdf") {
+		c.Header("Content-Type", "application/pdf")
+	} else if strings.HasSuffix(lowerName, ".epub") {
+		c.Header("Content-Type", "application/epub+zip")
+	} else if item.MimeType != nil && *item.MimeType != "" && *item.MimeType != "application/octet-stream" {
 		mime := *item.MimeType
-		if strings.HasSuffix(strings.ToLower(item.Filename), ".mkv") {
+		if strings.HasSuffix(lowerName, ".mkv") {
 			mime = "video/webm"
 		}
 		c.Header("Content-Type", mime)

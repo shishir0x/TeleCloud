@@ -501,11 +501,13 @@ func ServeTelegramFile(c *http.Request, w http.ResponseWriter, file database.Fil
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	// Set Content-Type if not already set
-	if w.Header().Get("Content-Type") == "" && file.MimeType != nil {
-		mime := *file.MimeType
-		// Fallback for common types if stored as octet-stream
+	if w.Header().Get("Content-Type") == "" {
 		lowerName := strings.ToLower(file.Filename)
-		if mime == "application/octet-stream" {
+		var mime string
+		if file.MimeType != nil && *file.MimeType != "" {
+			mime = *file.MimeType
+		}
+		if mime == "" || mime == "application/octet-stream" {
 			if strings.HasSuffix(lowerName, ".pdf") {
 				mime = "application/pdf"
 			} else if strings.HasSuffix(lowerName, ".epub") {
@@ -516,7 +518,9 @@ func ServeTelegramFile(c *http.Request, w http.ResponseWriter, file database.Fil
 		if strings.HasSuffix(lowerName, ".mkv") {
 			mime = "video/mp4"
 		}
-		w.Header().Set("Content-Type", mime)
+		if mime != "" {
+			w.Header().Set("Content-Type", mime)
+		}
 	}
 
 	// Set Content-Disposition only if not already set (e.g., by router for attachment)
