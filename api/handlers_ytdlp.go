@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"telecloud/tgclient"
 	"telecloud/utils"
@@ -31,9 +34,86 @@ func (h *Handler) handleGetYTDLPStatus(c *gin.Context) {
 
 func (h *Handler) handleGetYTDLPCookiesStatus(c *gin.Context) {
 	username := c.GetString("username")
-	cookieFile := filepath.Join(h.cfg.CookiesDir, fmt.Sprintf("user_%s.txt", username))
-	_, err := os.Stat(cookieFile)
-	c.JSON(http.StatusOK, gin.H{"has_cookie": err == nil})
+	activeCookie := tgclient.GetActiveCookieFile(h.cfg, username)
+	c.JSON(http.StatusOK, gin.H{"has_cookie": activeCookie != ""})
+}
+
+type jsonCookieItem struct {
+	Domain         string          `json:"domain"`
+	ExpirationDate json.RawMessage `json:"expirationDate"`
+	HostOnly       *bool           `json:"hostOnly"`
+	HttpOnly       *bool           `json:"httpOnly"`
+	Name           string          `json:"name"`
+	Path           string          `json:"path"`
+	Secure         *bool           `json:"secure"`
+	Session        *bool           `json:"session"`
+	Value          string          `json:"value"`
+}
+
+func convertJSONToNetscapeCookies(data []byte) ([]byte, error) {
+	var cookies []jsonCookieItem
+	if err := json.Unmarshal(data, &cookies); err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("# Netscape HTTP Cookie File\n")
+	buf.WriteString("# http://curl.haxx.se/rfc/cookie_spec.html\n")
+	buf.WriteString("# Converted by TeleCloud from JSON format\n\n")
+
+	defaultExp := time.Now().Add(365 * 24 * time.Hour).Unix()
+
+	for _, c := range cookies {
+		if c.Name == "" || c.Domain == "" {
+			continue
+		}
+
+		domain := c.Domain
+		if c.HttpOnly != nil && *c.HttpOnly {
+			if !strings.HasPrefix(domain, "#HttpOnly_") {
+				domain = "#HttpOnly_" + domain
+			}
+		}
+
+		includeSubdomains := "FALSE"
+		cleanDomain := strings.TrimPrefix(domain, "#HttpOnly_")
+		if strings.HasPrefix(cleanDomain, ".") {
+			includeSubdomains = "TRUE"
+		} else if c.HostOnly != nil && !*c.HostOnly {
+			includeSubdomains = "TRUE"
+		}
+
+		path := c.Path
+		if path == "" {
+			path = "/"
+		}
+
+		secure := "FALSE"
+		if c.Secure != nil && *c.Secure {
+			secure = "TRUE"
+		}
+
+		exp := defaultExp
+		if len(c.ExpirationDate) > 0 {
+			expStr := strings.TrimSpace(string(c.ExpirationDate))
+			if f, err := strconv.ParseFloat(expStr, 64); err == nil && f > 0 {
+				exp = int64(f)
+			}
+		}
+
+		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+			domain,
+			includeSubdomains,
+			path,
+			secure,
+			exp,
+			c.Name,
+			c.Value,
+		)
+		buf.WriteString(line)
+	}
+
+	return buf.Bytes(), nil
 }
 
 func (h *Handler) handlePostYTDLPCookies(c *gin.Context) {
@@ -43,7 +123,7 @@ func (h *Handler) handlePostYTDLPCookies(c *gin.Context) {
 		return
 	}
 
-	if file.Size > 2*1024*1024 {
+	if file.Size > 5*1024*1024 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file_too_large"})
 		return
 	}
@@ -55,33 +135,97 @@ func (h *Handler) handlePostYTDLPCookies(c *gin.Context) {
 	}
 	defer src.Close()
 
-	head := make([]byte, 100)
-	n, _ := src.Read(head)
-	headStr := string(head[:n])
+	data, err := io.ReadAll(src)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed"})
+		return
+	}
 
+	headLen := len(data)
+	if headLen > 200 {
+		headLen = 200
+	}
+	headStr := string(data[:headLen])
 	isNetscape := strings.Contains(headStr, "# Netscape HTTP Cookie File") || strings.Contains(headStr, "# HTTP Cookie File")
 	isJSON := strings.HasPrefix(strings.TrimSpace(headStr), "[")
 
-	if !isNetscape && !isJSON {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_cookie_format"})
+	var finalData []byte
+	if isJSON {
+		converted, err := convertJSONToNetscapeCookies(data)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_cookie_format"})
+			return
+		}
+		finalData = converted
+	} else if isNetscape {
+		finalData = data
+	} else {
+		// Check if it's tab-separated netscape data without standard comment header
+		trimmed := strings.TrimSpace(string(data))
+		lines := strings.Split(trimmed, "\n")
+		hasTabs := false
+		for _, l := range lines {
+			if strings.Count(l, "\t") >= 5 {
+				hasTabs = true
+				break
+			}
+		}
+		if hasTabs {
+			var b bytes.Buffer
+			b.WriteString("# Netscape HTTP Cookie File\n# http://curl.haxx.se/rfc/cookie_spec.html\n\n")
+			b.Write(data)
+			finalData = b.Bytes()
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_cookie_format"})
+			return
+		}
+	}
+
+	if err := os.MkdirAll(h.cfg.CookiesDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "save_failed"})
 		return
 	}
 
 	username := c.GetString("username")
-	os.MkdirAll(h.cfg.CookiesDir, 0755)
-	cookieFile := filepath.Join(h.cfg.CookiesDir, fmt.Sprintf("user_%s.txt", username))
+	// 1. Save user-specific cookie file
+	if username != "" {
+		cookieFile := filepath.Join(h.cfg.CookiesDir, fmt.Sprintf("user_%s.txt", username))
+		if err := os.WriteFile(cookieFile, finalData, 0600); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "save_failed"})
+			return
+		}
+	}
 
-	if err := c.SaveUploadedFile(file, cookieFile); err != nil {
+	// 2. Also save as global cookies.txt so the mobile app and all sessions inherit it immediately
+	globalCookieFile := filepath.Join(h.cfg.CookiesDir, "cookies.txt")
+	if err := os.WriteFile(globalCookieFile, finalData, 0600); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "save_failed"})
 		return
 	}
+
+	// 3. If username is admin or empty, also update user_admin.txt
+	if username == "admin" || username == "" {
+		adminCookieFile := filepath.Join(h.cfg.CookiesDir, "user_admin.txt")
+		_ = os.WriteFile(adminCookieFile, finalData, 0600)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
 func (h *Handler) handleDeleteYTDLPCookies(c *gin.Context) {
 	username := c.GetString("username")
-	cookieFile := filepath.Join(h.cfg.CookiesDir, fmt.Sprintf("user_%s.txt", username))
-	os.Remove(cookieFile)
+	if username != "" {
+		cookieFile := filepath.Join(h.cfg.CookiesDir, fmt.Sprintf("user_%s.txt", username))
+		os.Remove(cookieFile)
+	}
+
+	// When admin deletes cookies, also remove global cookies.txt and user_admin.txt
+	if username == "admin" || username == "" {
+		os.Remove(filepath.Join(h.cfg.CookiesDir, "cookies.txt"))
+		os.Remove(filepath.Join(h.cfg.CookiesDir, "user_admin.txt"))
+		os.Remove(filepath.Join(h.cfg.CookiesDir, "youtube.txt"))
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
@@ -150,10 +294,13 @@ func (h *Handler) handleGetProxyImage(c *gin.Context) {
 }
 
 func (h *Handler) handlePostYTDLPFormats(c *gin.Context) {
-	url := c.PostForm("url")
+	url := strings.TrimSpace(c.PostForm("url"))
 	if url == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "url_required"})
 		return
+	}
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") && strings.Contains(url, ".") {
+		url = "https://" + url
 	}
 	if !tgclient.IsValidURL(url) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_url_format"})
@@ -173,7 +320,7 @@ func (h *Handler) handlePostYTDLPFormats(c *gin.Context) {
 }
 
 func (h *Handler) handlePostYTDLPDownload(c *gin.Context) {
-	url := c.PostForm("url")
+	url := strings.TrimSpace(c.PostForm("url"))
 	formatID := c.PostForm("format_id")
 	downloadType := c.PostForm("download_type")
 	path := c.PostForm("path")
@@ -181,6 +328,9 @@ func (h *Handler) handlePostYTDLPDownload(c *gin.Context) {
 	if url == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "url_required"})
 		return
+	}
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") && strings.Contains(url, ".") {
+		url = "https://" + url
 	}
 	if !tgclient.IsValidURL(url) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_url_format"})

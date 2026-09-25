@@ -25,6 +25,10 @@ func translateYTDLPError(errMsg string) string {
 	switch {
 	case strings.Contains(errMsg, "sign in to confirm your age"):
 		return "age_restricted"
+	case strings.Contains(errMsg, "sign in to confirm you're not a bot") ||
+		strings.Contains(errMsg, "confirm you're not a bot") ||
+		strings.Contains(errMsg, "sign in to confirm your identity"):
+		return "bot_verification_required"
 	case strings.Contains(errMsg, "incomplete youtube id") || strings.Contains(errMsg, "not a valid url"):
 		return "invalid_url"
 	case strings.Contains(errMsg, "this video is unavailable") || strings.Contains(errMsg, "video unavailable"):
@@ -78,6 +82,45 @@ type YTDLPFormat struct {
 	Height         int    `json:"height"`
 }
 
+// GetActiveCookieFile resolves the most relevant cookie file for the given user,
+// checking user-specific cookies first, then global cookies.txt, admin cookies,
+// youtube.txt, and finally any valid cookie file in the cookies directory.
+func GetActiveCookieFile(cfg *config.Config, owner string) string {
+	if cfg == nil || cfg.CookiesDir == "" {
+		return ""
+	}
+
+	var candidates []string
+	if owner != "" {
+		candidates = append(candidates, filepath.Join(cfg.CookiesDir, fmt.Sprintf("user_%s.txt", owner)))
+	}
+	candidates = append(candidates,
+		filepath.Join(cfg.CookiesDir, "cookies.txt"),
+		filepath.Join(cfg.CookiesDir, "user_admin.txt"),
+		filepath.Join(cfg.CookiesDir, "youtube.txt"),
+	)
+
+	for _, path := range candidates {
+		if fi, err := os.Stat(path); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return path
+		}
+	}
+
+	// Dynamic fallback: scan directory for any valid non-empty .txt cookie file
+	if entries, err := os.ReadDir(cfg.CookiesDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".txt") {
+				p := filepath.Join(cfg.CookiesDir, e.Name())
+				if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+					return p
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
 func GetYTDLPFormats(url string, cfg *config.Config, owner string) (*YTDLPInfo, error) {
 	ytdlpEnabled := cfg.YTDLPPath != "disabled" && cfg.YTDLPPath != "disable"
 	ffmpegEnabled := cfg.FFMPEGPath != "disabled" && cfg.FFMPEGPath != "disable"
@@ -93,13 +136,18 @@ func GetYTDLPFormats(url string, cfg *config.Config, owner string) (*YTDLPInfo, 
 		return nil, fmt.Errorf("forbidden_url")
 	}
 
-	args := []string{"-J", "--no-playlist", url}
-
-	// Check for user cookie file
-	cookieFile := filepath.Join(cfg.CookiesDir, fmt.Sprintf("user_%s.txt", owner))
-	if _, err := os.Stat(cookieFile); err == nil {
-		args = append([]string{"--cookies", cookieFile}, args...)
+	args := []string{
+		"-J",
+		"--no-playlist",
+		"--extractor-args", "youtube:player_client=android,web",
 	}
+
+	// Check for active cookie file (user-specific, global cookies.txt, or admin cookies)
+	if cookieFile := GetActiveCookieFile(cfg, owner); cookieFile != "" {
+		args = append(args, "--cookies", cookieFile)
+	}
+
+	args = append(args, url)
 
 	// Timeout so a hung yt-dlp (slow site, dead network) cannot block the
 	// HTTP handler indefinitely.
@@ -283,6 +331,7 @@ func ProcessYTDLPUpload(ctx context.Context, url, formatID, path, taskID, downlo
 		"--newline",
 		"--no-playlist",
 		"--concurrent-fragments", "5",
+		"--extractor-args", "youtube:player_client=android,web",
 		"-o", tempPathPattern,
 	}
 
@@ -291,9 +340,8 @@ func ProcessYTDLPUpload(ctx context.Context, url, formatID, path, taskID, downlo
 		args = append(args, "--extract-audio", "--audio-format", "mp3", "--embed-thumbnail", "--add-metadata", "--convert-thumbnails", "jpg")
 	}
 
-	// Check for user cookie file
-	cookieFile := filepath.Join(cfg.CookiesDir, fmt.Sprintf("user_%s.txt", owner))
-	if _, err := os.Stat(cookieFile); err == nil {
+	// Check for active cookie file (user-specific, global cookies.txt, or admin cookies)
+	if cookieFile := GetActiveCookieFile(cfg, owner); cookieFile != "" {
 		args = append(args, "--cookies", cookieFile)
 	}
 
