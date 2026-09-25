@@ -40,7 +40,7 @@ type File struct {
 
 	// Virtual fields
 	DirectToken      string `db:"-" json:"direct_token,omitempty"`
-	HasThumb         bool   `db:"-" json:"has_thumb"`
+	HasThumb         bool   `db:"has_thumb" json:"has_thumb"`
 	HasSharePassword bool   `db:"-" json:"has_share_password"`
 }
 
@@ -243,7 +243,8 @@ const sqliteSchema = `
 		deleted_at DATETIME,
 		share_password TEXT,
 		share_views INTEGER DEFAULT 0,
-		share_downloads INTEGER DEFAULT 0
+		share_downloads INTEGER DEFAULT 0,
+		has_thumb BOOLEAN DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS settings (
@@ -344,6 +345,8 @@ const sqliteSchema = `
 	CREATE INDEX IF NOT EXISTS idx_files_filename ON files(filename);
 	CREATE INDEX IF NOT EXISTS idx_files_owner_path ON files(owner, path, filename);
 	CREATE INDEX IF NOT EXISTS idx_files_message_id ON files(message_id);
+	CREATE INDEX IF NOT EXISTS idx_files_dir_listing ON files(owner, path, is_folder DESC, id DESC);
+	CREATE INDEX IF NOT EXISTS idx_files_path_dir_listing ON files(path, is_folder DESC, id DESC);
 	CREATE INDEX IF NOT EXISTS idx_passkeys_username ON passkeys(username);
 	CREATE INDEX IF NOT EXISTS idx_file_parts_file_id ON file_parts(file_id);
 	`
@@ -364,7 +367,8 @@ const mysqlSchema = `
 		deleted_at DATETIME,
 		share_password TEXT,
 		share_views INT DEFAULT 0,
-		share_downloads INT DEFAULT 0
+		share_downloads INT DEFAULT 0,
+		has_thumb TINYINT(1) DEFAULT 0
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 	CREATE TABLE IF NOT EXISTS settings (
@@ -484,7 +488,8 @@ const postgresSchema = `
 		deleted_at TIMESTAMP,
 		share_password TEXT,
 		share_views INT DEFAULT 0,
-		share_downloads INT DEFAULT 0
+		share_downloads INT DEFAULT 0,
+		has_thumb BOOLEAN DEFAULT FALSE
 	);
 
 	CREATE TABLE IF NOT EXISTS settings (
@@ -589,6 +594,8 @@ const postgresSchema = `
 	CREATE INDEX IF NOT EXISTS idx_files_filename ON files(filename);
 	CREATE INDEX IF NOT EXISTS idx_files_owner_path ON files(owner, path, filename);
 	CREATE INDEX IF NOT EXISTS idx_files_message_id ON files(message_id);
+	CREATE INDEX IF NOT EXISTS idx_files_dir_listing ON files(owner, path, is_folder DESC, id DESC);
+	CREATE INDEX IF NOT EXISTS idx_files_path_dir_listing ON files(path, is_folder DESC, id DESC);
 	CREATE INDEX IF NOT EXISTS idx_passkeys_username ON passkeys(username);
 	CREATE INDEX IF NOT EXISTS idx_file_parts_file_id ON file_parts(file_id);
 `
@@ -621,6 +628,10 @@ func migrateSQLite() error {
 	DB.Exec("ALTER TABLE files ADD COLUMN share_password TEXT")
 	DB.Exec("ALTER TABLE files ADD COLUMN share_views INTEGER DEFAULT 0")
 	DB.Exec("ALTER TABLE files ADD COLUMN share_downloads INTEGER DEFAULT 0")
+	DB.Exec("ALTER TABLE files ADD COLUMN has_thumb BOOLEAN DEFAULT 0")
+	DB.Exec("UPDATE files SET has_thumb = 1 WHERE thumb_path IS NOT NULL AND thumb_path != ''")
+	DB.Exec("CREATE INDEX IF NOT EXISTS idx_files_dir_listing ON files(owner, path, is_folder DESC, id DESC)")
+	DB.Exec("CREATE INDEX IF NOT EXISTS idx_files_path_dir_listing ON files(path, is_folder DESC, id DESC)")
 	// Sessions get an explicit expiry column so we can stop trusting tokens
 	// older than 30 days, even if the cookie was somehow retained.
 	DB.Exec("ALTER TABLE sessions ADD COLUMN expires_at DATETIME")
@@ -746,6 +757,16 @@ func migrateMySQL() error {
 	if err := alterTableMySQL("files", "ADD COLUMN share_downloads INT DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := alterTableMySQL("files", "ADD COLUMN has_thumb TINYINT(1) DEFAULT 0"); err != nil {
+		return err
+	}
+	DB.Exec("UPDATE files SET has_thumb = 1 WHERE thumb_path IS NOT NULL AND thumb_path != ''")
+	if err := createIndexMySQL("idx_files_dir_listing", "files", "owner, path, is_folder, id", false); err != nil {
+		return err
+	}
+	if err := createIndexMySQL("idx_files_path_dir_listing", "files", "path, is_folder, id", false); err != nil {
+		return err
+	}
 	if err := alterTableMySQL("sessions", "ADD COLUMN expires_at DATETIME"); err != nil {
 		return err
 	}
@@ -772,6 +793,10 @@ func migratePostgres() error {
 	DB.Exec("ALTER TABLE files ADD COLUMN IF NOT EXISTS share_password TEXT")
 	DB.Exec("ALTER TABLE files ADD COLUMN IF NOT EXISTS share_views INT DEFAULT 0")
 	DB.Exec("ALTER TABLE files ADD COLUMN IF NOT EXISTS share_downloads INT DEFAULT 0")
+	DB.Exec("ALTER TABLE files ADD COLUMN IF NOT EXISTS has_thumb BOOLEAN DEFAULT FALSE")
+	DB.Exec("UPDATE files SET has_thumb = TRUE WHERE thumb_path IS NOT NULL AND thumb_path != ''")
+	DB.Exec("CREATE INDEX IF NOT EXISTS idx_files_dir_listing ON files(owner, path, is_folder DESC, id DESC)")
+	DB.Exec("CREATE INDEX IF NOT EXISTS idx_files_path_dir_listing ON files(path, is_folder DESC, id DESC)")
 	DB.Exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
 	DB.Exec("UPDATE sessions SET expires_at = created_at + INTERVAL '30 days' WHERE expires_at IS NULL")

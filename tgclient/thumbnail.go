@@ -168,7 +168,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 		}
 
 		oldThumb := item.ThumbPath
-		_, dbErr := database.DB.Exec("UPDATE files SET thumb_path = ? WHERE id = ?", newPath, fileID)
+		_, dbErr := database.DB.Exec("UPDATE files SET thumb_path = ?, has_thumb = TRUE WHERE id = ?", newPath, fileID)
 		if dbErr != nil {
 			os.Remove(newPath)
 			return nil, fmt.Errorf("failed to update DB: %w", dbErr)
@@ -317,6 +317,7 @@ func RegenerateFileThumbnail(ctx context.Context, fileID int64, cfg *config.Conf
 		return successHandler(thumbPath)
 	}
 
+	database.DB.Exec("UPDATE files SET has_thumb = FALSE WHERE id = ?", fileID)
 	return nil, fmt.Errorf("unsupported file type for thumbnail generation")
 }
 

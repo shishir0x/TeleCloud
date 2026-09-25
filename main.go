@@ -483,30 +483,17 @@ func startSessionCleanupTask() {
 
 func startCleanupTask(cfg *config.Config) {
 	go func() {
+		// Run initial sweep on boot to clean up stale files from previous run
+		if res, err := api.CleanTempFiles(cfg.TempDir, 1*time.Hour, false); err == nil && res.FilesCleaned > 0 {
+			log.Printf("[Temp] Boot sweep cleaned %d stale temp file(s) (%s)", res.FilesCleaned, res.FormattedBytes)
+		}
+
 		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
 		for range ticker.C {
-			now := time.Now()
-			filepath.WalkDir(cfg.TempDir, func(path string, d os.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
-					return nil
-				}
-				info, err := d.Info()
-				if err != nil {
-					return nil
-				}
-				if now.Sub(info.ModTime()) > 24*time.Hour {
-					os.Remove(path)
-					// Extract taskId from filename (taskId_filename)
-					filename := filepath.Base(path)
-					if idx := strings.Index(filename, "_"); idx != -1 {
-						taskId := filename[:idx]
-						api.DeleteChunkTracker(taskId)
-						database.DB.Exec("DELETE FROM upload_chunks WHERE task_id = ?", taskId)
-						database.DB.Exec("DELETE FROM upload_tasks WHERE id = ?", taskId)
-					}
-				}
-				return nil
-			})
+			if res, err := api.CleanTempFiles(cfg.TempDir, 1*time.Hour, false); err == nil && res.FilesCleaned > 0 {
+				log.Printf("[Temp] Hourly sweep cleaned %d stale temp file(s) (%s)", res.FilesCleaned, res.FormattedBytes)
+			}
 		}
 	}()
 }

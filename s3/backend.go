@@ -390,7 +390,7 @@ func (b *TelecloudBackend) CopyObject(srcBucket, srcKey, dstBucket, dstKey strin
 	dstDbPath, dstFilename := b.mapPath(dstKey)
 
 	var file database.File
-	query := "SELECT id, message_id, filename, path, size, mime_type, is_folder, thumb_path FROM files WHERE path = ? AND filename = ? AND owner = ? AND deleted_at IS NULL"
+	query := "SELECT id, message_id, filename, path, size, mime_type, is_folder, thumb_path, has_thumb FROM files WHERE path = ? AND filename = ? AND owner = ? AND deleted_at IS NULL"
 	args := []interface{}{srcDbPath, srcFilename, b.username}
 
 	err := database.RODB.Get(&file, query, args...)
@@ -409,8 +409,8 @@ func (b *TelecloudBackend) CopyObject(srcBucket, srcKey, dstBucket, dstKey strin
 
 	// Perform the copy in database
 	newFileID, err := database.InsertAndGetID(tx,
-		"INSERT INTO files (message_id, filename, path, size, mime_type, is_folder, thumb_path, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		file.MessageID, dstFilename, dstDbPath, file.Size, file.MimeType, file.IsFolder, file.ThumbPath, b.username,
+		"INSERT INTO files (message_id, filename, path, size, mime_type, is_folder, thumb_path, owner, has_thumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		file.MessageID, dstFilename, dstDbPath, file.Size, file.MimeType, file.IsFolder, file.ThumbPath, b.username, file.HasThumb,
 	)
 	if err != nil {
 		return gofakes3.CopyObjectResult{}, err

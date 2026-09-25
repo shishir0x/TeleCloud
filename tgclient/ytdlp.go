@@ -556,6 +556,7 @@ func ProcessYTDLPUpload(ctx context.Context, url, formatID, path, taskID, downlo
 		}
 	}
 
-	// Call existing upload logic
+	// Call existing upload logic and ensure temporary file is removed when done
+	defer os.Remove(downloadedFile)
 	ProcessCompleteUpload(ctx, downloadedFile, filename, path, mimeType, taskID, cfg, false, owner)
 }

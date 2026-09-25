@@ -438,6 +438,31 @@ func GetTask(taskID string) *UploadStatus {
 	return nil
 }
 
+// IsTaskActive reports whether a task exists in memory and is actively running.
+func IsTaskActive(taskID string) bool {
+	taskMutex.Lock()
+	defer taskMutex.Unlock()
+	status, ok := UploadTasks[taskID]
+	if !ok {
+		return false
+	}
+	return status.Status != "done" && status.Status != "error" && status.Status != "cancelled"
+}
+
+// SetTaskStatusForTest sets an in-memory task status (for testing).
+func SetTaskStatusForTest(taskID, status string) {
+	taskMutex.Lock()
+	defer taskMutex.Unlock()
+	UploadTasks[taskID] = &UploadStatus{Status: status}
+}
+
+// RemoveTaskForTest removes a task from in-memory map (for testing).
+func RemoveTaskForTest(taskID string) {
+	taskMutex.Lock()
+	defer taskMutex.Unlock()
+	delete(UploadTasks, taskID)
+}
+
 func CancelTask(taskID string, username string) bool {
 	taskMutex.Lock()
 
@@ -868,7 +893,7 @@ func ProcessCompleteUpload(ctx context.Context, filePath, filename, path, mimeTy
 	// Generate local thumbnail before exiting so temp file is not removed prematurely by caller
 	localThumb := utils.CreateLocalThumbnail(filePath, mimeType, cfg.FFMPEGPath)
 	if localThumb != nil {
-		database.DB.Exec("UPDATE files SET thumb_path = ? WHERE id = ?", *localThumb, fileID)
+		database.DB.Exec("UPDATE files SET thumb_path = ?, has_thumb = TRUE WHERE id = ?", *localThumb, fileID)
 	}
 
 	UpdateTaskWithFileID(taskID, "done", 100, "", fileID, uniqueFilename, owner)
@@ -1464,7 +1489,7 @@ func ProcessCompleteUploadSync(ctx context.Context, filePath, filename, path, mi
 
 	localThumb := utils.CreateLocalThumbnail(filePath, mimeType, cfg.FFMPEGPath)
 	if localThumb != nil {
-		database.DB.Exec("UPDATE files SET thumb_path = ? WHERE id = ?", *localThumb, fileID)
+		database.DB.Exec("UPDATE files SET thumb_path = ?, has_thumb = TRUE WHERE id = ?", *localThumb, fileID)
 	}
 
 	return fileID, uniqueFilename, nil

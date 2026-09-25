@@ -46,6 +46,9 @@ type AuditEvent struct {
 // LogAudit persists an AuditEvent. Failures are logged but never propagated:
 // auditing must never break the user-facing flow.
 func LogAudit(e AuditEvent) {
+	if DB == nil {
+		return
+	}
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now()
 	}

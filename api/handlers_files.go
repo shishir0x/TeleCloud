@@ -130,7 +130,8 @@ func (h *Handler) handleGetIndex(c *gin.Context) {
 		"is_admin":              isAdmin,
 		"username":              sessionUsername,
 		"storage_used":          userStorageUsed,
-		"theme":                 database.GetUserSetting(sessionUsername, "theme"),
+		"theme":                  database.GetUserSetting(sessionUsername, "theme"),
+		"check_updates_enabled": database.GetSetting("check_updates_enabled") == "true",
 		"force_change":          forcePasswordChange,
 		"log_group_id":          h.cfg.LogGroupID,
 		"bot_tokens":            database.GetSetting("bot_tokens"),
@@ -158,13 +159,19 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 		return
 	}
 
-	var files []database.File
-	query := "SELECT * FROM files WHERE path = ? AND owner = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL) ORDER BY is_folder DESC, id DESC"
+	const fileColumns = "id, message_id, filename, path, size, mime_type, share_token, is_folder, thumb_path, owner, created_at, share_password, share_views, share_downloads, has_thumb"
+
+	query := "SELECT " + fileColumns + " FROM files WHERE path = ? AND owner = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL) ORDER BY is_folder DESC, id DESC"
+	countQuery := "SELECT COUNT(*) FROM files WHERE path = ? AND owner = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL)"
 	args := []interface{}{dbPath, username}
+	countArgs := []interface{}{dbPath, username}
+
 	if isAdmin {
 		if dbPath == "/" {
-			query = "SELECT * FROM files WHERE path = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL) ORDER BY is_folder DESC, id DESC"
+			query = "SELECT " + fileColumns + " FROM files WHERE path = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL) AND NOT (is_folder = TRUE AND filename IN (SELECT username FROM child_accounts)) ORDER BY is_folder DESC, id DESC"
+			countQuery = "SELECT COUNT(*) FROM files WHERE path = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL) AND NOT (is_folder = TRUE AND filename IN (SELECT username FROM child_accounts))"
 			args = []interface{}{dbPath}
+			countArgs = []interface{}{dbPath}
 		} else {
 			parts := strings.Split(strings.TrimPrefix(dbPath, "/"), "/")
 			rootFolder := parts[0]
@@ -175,10 +182,44 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 			if isChild > 0 {
 				effectiveOwner = rootFolder
 			}
-			query = "SELECT * FROM files WHERE path = ? AND owner = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL) ORDER BY is_folder DESC, id DESC"
+			query = "SELECT " + fileColumns + " FROM files WHERE path = ? AND owner = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL) ORDER BY is_folder DESC, id DESC"
+			countQuery = "SELECT COUNT(*) FROM files WHERE path = ? AND owner = ? AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL)"
 			args = []interface{}{dbPath, effectiveOwner}
+			countArgs = []interface{}{dbPath, effectiveOwner}
 		}
 	}
+
+	limitStr := c.Query("limit")
+	offsetStr := c.Query("offset")
+	isPaginated := limitStr != "" || offsetStr != ""
+	limit := 0
+	offset := 0
+
+	var total int
+	if isPaginated {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+			if limit > 500 {
+				limit = 500
+			}
+		} else {
+			limit = 50
+		}
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+
+		if err := database.RODB.Get(&total, countQuery, countArgs...); err != nil {
+			log.Printf("ERROR: failed to count files: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
+			return
+		}
+
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, limit, offset)
+	}
+
+	files := make([]database.File, 0)
 	err := database.RODB.Select(&files, query, args...)
 	if err != nil {
 		log.Printf("ERROR: failed to query files: %v", err)
@@ -186,33 +227,14 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 		return
 	}
 
-	if isAdmin && dbPath == "/" {
-		var activeUsers []string
-		database.RODB.Select(&activeUsers, "SELECT username FROM child_accounts")
-		userMap := make(map[string]bool)
-		for _, u := range activeUsers {
-			userMap[u] = true
-		}
-		var filtered []database.File
-		for _, f := range files {
-			if f.IsFolder && userMap[f.Filename] {
-				continue
-			}
-			filtered = append(filtered, f)
-		}
-		files = filtered
+	if !isPaginated {
+		total = len(files)
 	}
 
 	for i := range files {
 		files[i].Path = unmapPath(files[i].Path, username, isAdmin)
 		if files[i].ShareToken != nil && !files[i].IsFolder {
 			files[i].DirectToken = utils.GenerateDirectToken(*files[i].ShareToken)
-		}
-		hasValidThumb := false
-		if files[i].ThumbPath != nil {
-			if _, err := os.Stat(*files[i].ThumbPath); err == nil {
-				hasValidThumb = true
-			}
 		}
 
 		if !files[i].IsFolder {
@@ -230,11 +252,7 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 
 			if isMedia {
 				files[i].HasThumb = true
-			} else {
-				files[i].HasThumb = hasValidThumb
 			}
-		} else {
-			files[i].HasThumb = hasValidThumb
 		}
 		if files[i].SharePassword != nil && *files[i].SharePassword != "" {
 			files[i].HasSharePassword = true
@@ -248,9 +266,156 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 		database.RODB.Get(&storageUsed, "SELECT COALESCE(SUM(size), 0) FROM files WHERE (path = ? OR path LIKE ?) AND is_folder = FALSE AND message_id IS NOT NULL", prefix, prefix+"/%")
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	hasMore := false
+	if isPaginated {
+		hasMore = (offset + len(files)) < total
+	}
+
+	resp := gin.H{
 		"files":        files,
 		"storage_used": storageUsed,
+		"total":        total,
+		"has_more":     hasMore,
+	}
+	if isPaginated {
+		resp["limit"] = limit
+		resp["offset"] = offset
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *Handler) handleSearch(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	typeFilter := strings.ToLower(strings.TrimSpace(c.Query("type")))
+	limitStr := c.Query("limit")
+	offsetStr := c.Query("offset")
+
+	username := c.GetString("username")
+	isAdmin := c.GetBool("is_admin")
+
+	limit := 50
+	offset := 0
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+		if limit > 500 {
+			limit = 500
+		}
+	}
+	if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+		offset = o
+	}
+
+	if q == "" && typeFilter == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"files":    []database.File{},
+			"total":    0,
+			"has_more": false,
+			"limit":    limit,
+			"offset":   offset,
+		})
+		return
+	}
+
+	var whereClauses []string
+	var args []interface{}
+
+	if isAdmin {
+		whereClauses = append(whereClauses, "deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL)")
+	} else {
+		prefix := "/" + username
+		whereClauses = append(whereClauses, "(owner = ? OR path = ? OR path LIKE ?) AND deleted_at IS NULL AND (is_folder = TRUE OR message_id IS NOT NULL)")
+		args = append(args, username, prefix, prefix+"/%")
+	}
+
+	if q != "" {
+		escaped := strings.ReplaceAll(q, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `%`, `\%`)
+		escaped = strings.ReplaceAll(escaped, `_`, `\_`)
+		pattern := "%" + escaped + "%"
+
+		if database.IsPostgres() {
+			whereClauses = append(whereClauses, "filename ILIKE ? ESCAPE '\\'")
+		} else {
+			whereClauses = append(whereClauses, "filename LIKE ? ESCAPE '\\'")
+		}
+		args = append(args, pattern)
+	}
+
+	switch typeFilter {
+	case "image", "images":
+		whereClauses = append(whereClauses, "is_folder = FALSE AND (mime_type LIKE 'image/%' OR filename LIKE '%.jpg' OR filename LIKE '%.jpeg' OR filename LIKE '%.png' OR filename LIKE '%.gif' OR filename LIKE '%.webp' OR filename LIKE '%.svg' OR filename LIKE '%.bmp' OR filename LIKE '%.heic' OR filename LIKE '%.heif' OR filename LIKE '%.tiff')")
+	case "video", "videos":
+		whereClauses = append(whereClauses, "is_folder = FALSE AND (mime_type LIKE 'video/%' OR filename LIKE '%.mp4' OR filename LIKE '%.mkv' OR filename LIKE '%.avi' OR filename LIKE '%.mov' OR filename LIKE '%.webm' OR filename LIKE '%.flv' OR filename LIKE '%.wmv')")
+	case "audio":
+		whereClauses = append(whereClauses, "is_folder = FALSE AND (mime_type LIKE 'audio/%' OR filename LIKE '%.mp3' OR filename LIKE '%.wav' OR filename LIKE '%.flac' OR filename LIKE '%.aac' OR filename LIKE '%.ogg' OR filename LIKE '%.m4a')")
+	case "document", "documents":
+		whereClauses = append(whereClauses, "is_folder = FALSE AND (mime_type = 'application/pdf' OR mime_type = 'application/epub+zip' OR mime_type = 'application/x-cbz' OR filename LIKE '%.pdf' OR filename LIKE '%.epub' OR filename LIKE '%.cbz' OR filename LIKE '%.doc' OR filename LIKE '%.docx' OR filename LIKE '%.txt' OR filename LIKE '%.rtf' OR filename LIKE '%.odt')")
+	case "archive", "archives":
+		whereClauses = append(whereClauses, "is_folder = FALSE AND (filename LIKE '%.zip' OR filename LIKE '%.tar' OR filename LIKE '%.gz' OR filename LIKE '%.7z' OR filename LIKE '%.rar')")
+	case "folder", "folders":
+		whereClauses = append(whereClauses, "is_folder = TRUE")
+	case "file", "files":
+		whereClauses = append(whereClauses, "is_folder = FALSE")
+	}
+
+	whereSQL := strings.Join(whereClauses, " AND ")
+
+	countQuery := "SELECT COUNT(*) FROM files WHERE " + whereSQL
+	var total int
+	if err := database.RODB.Get(&total, countQuery, args...); err != nil {
+		log.Printf("ERROR: search count failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
+		return
+	}
+
+	const fileColumns = "id, message_id, filename, path, size, mime_type, share_token, is_folder, thumb_path, owner, created_at, share_password, share_views, share_downloads, has_thumb"
+	query := "SELECT " + fileColumns + " FROM files WHERE " + whereSQL + " ORDER BY is_folder DESC, id DESC LIMIT ? OFFSET ?"
+	queryArgs := append(append([]interface{}{}, args...), limit, offset)
+
+	files := make([]database.File, 0)
+	if err := database.RODB.Select(&files, query, queryArgs...); err != nil {
+		log.Printf("ERROR: search query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
+		return
+	}
+
+	for i := range files {
+		files[i].Path = unmapPath(files[i].Path, username, isAdmin)
+		if files[i].ShareToken != nil && !files[i].IsFolder {
+			files[i].DirectToken = utils.GenerateDirectToken(*files[i].ShareToken)
+		}
+
+		if !files[i].IsFolder {
+			mimeType := ""
+			if files[i].MimeType != nil {
+				mimeType = *files[i].MimeType
+			}
+			actualMime := utils.DetectMime(files[i].Filename, mimeType)
+			ext := strings.ToLower(filepath.Ext(files[i].Filename))
+			isMedia := strings.HasPrefix(actualMime, "image/") ||
+				strings.HasPrefix(actualMime, "video/") ||
+				strings.HasPrefix(actualMime, "audio/") ||
+				actualMime == "application/pdf" ||
+				ext == ".pdf" || ext == ".epub" || ext == ".cbz"
+
+			if isMedia {
+				files[i].HasThumb = true
+			}
+		}
+		if files[i].SharePassword != nil && *files[i].SharePassword != "" {
+			files[i].HasSharePassword = true
+		}
+	}
+
+	hasMore := (offset + len(files)) < total
+
+	c.JSON(http.StatusOK, gin.H{
+		"files":    files,
+		"total":    total,
+		"has_more": hasMore,
+		"limit":    limit,
+		"offset":   offset,
 	})
 }
 
@@ -399,6 +564,7 @@ func (h *Handler) handlePostUpload(c *gin.Context) {
 		state.Lock()
 		if len(state.received) == 0 {
 			chunkTrackerSync.Delete(taskID)
+			os.Remove(tempFilePath)
 		}
 		state.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_seek_temp_file"})
@@ -414,6 +580,7 @@ func (h *Handler) handlePostUpload(c *gin.Context) {
 		state.Lock()
 		if len(state.received) == 0 {
 			chunkTrackerSync.Delete(taskID)
+			os.Remove(tempFilePath)
 		}
 		state.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_write_chunk"})
@@ -817,8 +984,8 @@ func (h *Handler) handlePostPaste(c *gin.Context) {
 				for _, child := range children {
 					newChildPath := newPrefix + child.Path[len(oldPrefix):]
 					newChildID, err := database.InsertAndGetID(tx,
-						"INSERT INTO files (message_id, filename, path, size, mime_type, is_folder, thumb_path, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-						child.MessageID, child.Filename, newChildPath, child.Size, child.MimeType, child.IsFolder, child.ThumbPath, username)
+						"INSERT INTO files (message_id, filename, path, size, mime_type, is_folder, thumb_path, owner, has_thumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+						child.MessageID, child.Filename, newChildPath, child.Size, child.MimeType, child.IsFolder, child.ThumbPath, username, child.HasThumb)
 					if err != nil {
 						log.Printf("ERROR: paste copy child insert failed: %v", err)
 						c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
@@ -839,8 +1006,8 @@ func (h *Handler) handlePostPaste(c *gin.Context) {
 					continue
 				}
 				newFileID, err := database.InsertAndGetID(tx,
-					"INSERT INTO files (message_id, filename, path, size, mime_type, is_folder, thumb_path, owner) VALUES (?, ?, ?, ?, ?, FALSE, ?, ?)",
-					item.MessageID, uniqueName, req.Destination, item.Size, item.MimeType, item.ThumbPath, username)
+					"INSERT INTO files (message_id, filename, path, size, mime_type, is_folder, thumb_path, owner, has_thumb) VALUES (?, ?, ?, ?, ?, FALSE, ?, ?, ?)",
+					item.MessageID, uniqueName, req.Destination, item.Size, item.MimeType, item.ThumbPath, username, item.HasThumb)
 				if err != nil {
 					log.Printf("ERROR: paste copy file insert failed: %v", err)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
@@ -1258,6 +1425,7 @@ func (h *Handler) handleGetThumb(c *gin.Context) {
 			}
 		} else if err != nil {
 			log.Printf("[handleGetThumb] Thumbnail generation failed for file ID %d (%s): %v", id, item.Filename, err)
+			database.DB.Exec("UPDATE files SET has_thumb = FALSE WHERE id = ?", id)
 		}
 	}
 

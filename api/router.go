@@ -163,6 +163,10 @@ func SetupRouter(cfg *config.Config, contentFS fs.FS, startTG func(cfg *config.C
 		api.POST("/settings/backup/toggle", h.handlePostBackupToggle)
 		api.POST("/settings/restore", h.handlePostRestore)
 		api.POST("/settings/restart", h.handlePostRestart)
+		api.POST("/settings/updates", h.handlePostUpdateSettings)
+		api.GET("/updates", h.handleGetUpdates)
+		api.POST("/settings/temp/clean", h.handleCleanTempFiles)
+		api.GET("/settings/temp/status", h.handleGetTempStatus)
 
 		// Users
 		api.GET("/users", h.handleGetUsers)
@@ -172,6 +176,7 @@ func SetupRouter(cfg *config.Config, contentFS fs.FS, startTG func(cfg *config.C
 
 		// Files & Folders
 		api.GET("/files", h.handleGetFiles)
+		api.GET("/search", h.handleSearch)
 		api.POST("/folders", h.handlePostFolders)
 		api.POST("/upload", h.handlePostUpload)
 		api.POST("/remote-upload", h.handlePostRemoteUpload)
