@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -60,15 +61,17 @@ func InitWebAuthn(rpid string, origins []string) {
 		resolvedOrigins = []string{"http://localhost:8091", "http://localhost:8080"}
 	}
 
-	var err error
-	webAuthn, err = webauthn.New(&webauthn.Config{
+	wa, err := webauthn.New(&webauthn.Config{
 		RPDisplayName: "TeleCloud",
 		RPID:          rpid,
 		RPOrigins:     resolvedOrigins,
 	})
 	if err != nil {
-		panic(err)
+		log.Printf("[WebAuthn] Failed to initialize WebAuthn: %v. Passkey functionality will be disabled.", err)
+		webAuthn = nil
+		return
 	}
+	webAuthn = wa
 }
 
 func GetWebAuthnConfig() (string, []string) {
@@ -158,6 +161,10 @@ func getWebAuthnUser(username string) (*WebAuthnUser, error) {
 }
 
 func RegisterPasskeyBegin(c *gin.Context) {
+	if webAuthn == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "WebAuthn is not configured or unavailable"})
+		return
+	}
 	username := c.GetString("username")
 	user, err := getWebAuthnUser(username)
 	if err != nil {
@@ -185,6 +192,10 @@ func RegisterPasskeyBegin(c *gin.Context) {
 }
 
 func RegisterPasskeyFinish(c *gin.Context) {
+	if webAuthn == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "WebAuthn is not configured or unavailable"})
+		return
+	}
 	username := c.GetString("username")
 	user, err := getWebAuthnUser(username)
 	if err != nil {
@@ -236,6 +247,10 @@ func RegisterPasskeyFinish(c *gin.Context) {
 }
 
 func LoginPasskeyBegin(c *gin.Context) {
+	if webAuthn == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "WebAuthn is not configured or unavailable"})
+		return
+	}
 	username := c.Query("username")
 	if username == "" {
 		// Discoverable credentials (resident keys)
@@ -275,6 +290,10 @@ func LoginPasskeyBegin(c *gin.Context) {
 }
 
 func LoginPasskeyFinish(c *gin.Context) {
+	if webAuthn == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "WebAuthn is not configured or unavailable"})
+		return
+	}
 	sessionID, err := c.Cookie("webauthn_session")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing webauthn session"})

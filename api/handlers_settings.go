@@ -12,6 +12,7 @@ import (
 	"telecloud/utils"
 	"telecloud/webdav"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -21,6 +22,13 @@ import (
 func (h *Handler) handlePostPassword(c *gin.Context) {
 	oldPassword := c.PostForm("old_password")
 	newPassword := c.PostForm("new_password")
+	if utf8.RuneCountInString(newPassword) < 8 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "password_too_short",
+			"message": "Password must be at least 8 characters long",
+		})
+		return
+	}
 	username := c.GetString("username")
 	isAdmin := c.GetBool("is_admin")
 
@@ -210,7 +218,7 @@ func (h *Handler) handleGetBotUserSettings(c *gin.Context) {
 		botPoolUploadFolder = "TelegramUpload"
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"telegram_user_id":         telegramUserID,
+		"telegram_user_id":       telegramUserID,
 		"bot_pool_upload_folder": botPoolUploadFolder,
 	})
 }
@@ -439,6 +447,12 @@ func (h *Handler) handlePostUser(c *gin.Context) {
 	}
 	if password == "" {
 		password = utils.GenerateRandomString(16)
+	} else if utf8.RuneCountInString(password) < 8 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "password_too_short",
+			"message": "Password must be at least 8 characters long",
+		})
+		return
 	}
 
 	validUsername := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)

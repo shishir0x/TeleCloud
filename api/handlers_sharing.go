@@ -30,15 +30,12 @@ func (h *Handler) checkShareAuth(c *gin.Context, item database.File) bool {
 	if err != nil || authCookie == "" {
 		return false
 	}
-	var expiresAt time.Time
-	err = database.RODB.Get(&expiresAt,
-		"SELECT expires_at FROM share_sessions WHERE token = ? AND share_token = ?",
-		authCookie, token)
-	if err != nil {
-		return false
-	}
-	if time.Now().After(expiresAt) {
-		database.DB.Exec("DELETE FROM share_sessions WHERE token = ?", authCookie)
+	var count int
+	err = database.RODB.Get(&count,
+		"SELECT COUNT(*) FROM share_sessions WHERE token = ? AND share_token = ? AND expires_at > ?",
+		authCookie, token, time.Now())
+	if err != nil || count == 0 {
+		database.DB.Exec("DELETE FROM share_sessions WHERE token = ? AND expires_at <= ?", authCookie, time.Now())
 		return false
 	}
 	return true
@@ -47,6 +44,14 @@ func (h *Handler) checkShareAuth(c *gin.Context, item database.File) bool {
 func (h *Handler) handleVerifySharePassword(c *gin.Context) {
 	token := c.Param("token")
 	password := c.PostForm("password")
+	clientIP := c.ClientIP()
+	pairKey := "share_pair:" + clientIP + ":" + token
+	tokenKey := "share_token:" + token
+
+	if isRateLimited(pairKey, 5) || isRateLimited(tokenKey, 10) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_requests"})
+		return
+	}
 
 	var item database.File
 	if err := database.RODB.Get(&item, "SELECT share_password FROM files WHERE share_token = ? AND deleted_at IS NULL", token); err != nil {
@@ -60,9 +65,29 @@ func (h *Handler) handleVerifySharePassword(c *gin.Context) {
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(*item.SharePassword), []byte(password)); err != nil {
+		pairAttempts := bumpAttempt(pairKey)
+		tokenAttempts := bumpAttempt(tokenKey)
+
+		// Artificial progressive delay to thwart fast automated guessing
+		if gin.Mode() != gin.TestMode {
+			delay := time.Duration(pairAttempts) * 100 * time.Millisecond
+			if delay > 1*time.Second {
+				delay = 1 * time.Second
+			}
+			time.Sleep(delay)
+		}
+
+		if pairAttempts >= 5 || tokenAttempts >= 10 {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_requests"})
+			return
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "incorrect_password"})
 		return
 	}
+
+	// Successful verification resets failed-attempt state
+	clearLoginAttempts(pairKey)
+	clearLoginAttempts(tokenKey)
 
 	// Mint a single-purpose, opaque session token. The bcrypt hash never
 	// leaves the server, so an attacker who somehow obtains the password
@@ -464,7 +489,7 @@ func (h *Handler) handleShareFile(c *gin.Context) {
 	password := c.PostForm("password")
 	var item database.File
 	username := c.GetString("username")
-	if err := database.RODB.Get(&item, "SELECT path, is_folder FROM files WHERE id = ? AND owner = ?", id, username); err != nil {
+	if err := database.RODB.Get(&item, "SELECT path, is_folder, share_token FROM files WHERE id = ? AND owner = ?", id, username); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -479,7 +504,28 @@ func (h *Handler) handleShareFile(c *gin.Context) {
 	}
 
 	token := uuid.New().String()
-	database.DB.Exec("UPDATE files SET share_token = ?, share_password = ?, share_views = 0, share_downloads = 0 WHERE id = ?", token, hashedPass, id)
+
+	tx, err := database.DB.Beginx()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "transaction_failed"})
+		return
+	}
+	defer tx.Rollback()
+
+	if item.ShareToken != nil && *item.ShareToken != "" {
+		if _, err := tx.Exec("DELETE FROM share_sessions WHERE share_token = ?", *item.ShareToken); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_revoke_old_sessions"})
+			return
+		}
+	}
+	if _, err := tx.Exec("UPDATE files SET share_token = ?, share_password = ?, share_views = 0, share_downloads = 0 WHERE id = ?", token, hashedPass, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_share"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "commit_failed"})
+		return
+	}
 
 	resp := gin.H{"share_token": token}
 	if !item.IsFolder {
@@ -500,10 +546,29 @@ func (h *Handler) handleRevokeShare(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if item.ShareToken != nil {
-		database.DB.Exec("DELETE FROM share_sessions WHERE share_token = ?", *item.ShareToken)
+
+	tx, err := database.DB.Beginx()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "transaction_failed"})
+		return
 	}
-	database.DB.Exec("UPDATE files SET share_token = NULL, share_password = NULL, share_views = 0, share_downloads = 0 WHERE id = ?", id)
+	defer tx.Rollback()
+
+	if item.ShareToken != nil && *item.ShareToken != "" {
+		if _, err := tx.Exec("DELETE FROM share_sessions WHERE share_token = ?", *item.ShareToken); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "revoke_sessions_failed"})
+			return
+		}
+	}
+	if _, err := tx.Exec("UPDATE files SET share_token = NULL, share_password = NULL, share_views = 0, share_downloads = 0 WHERE id = ?", id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "revoke_share_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "commit_failed"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "revoked"})
 }
 
@@ -538,5 +603,3 @@ func (h *Handler) handleGetShares(c *gin.Context) {
 		"files": files,
 	})
 }
-
-

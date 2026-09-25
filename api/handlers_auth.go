@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
+	"crypto/subtle"
 	"net/http"
 	"strconv"
 	"strings"
 	"telecloud/database"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -30,30 +33,99 @@ func (h *Handler) handleGetLogin(c *gin.Context) {
 	})
 }
 
-// bumpAttempt records a failed authentication attempt against the given IP.
-// Shared by /login and /setup so a determined attacker can't trivially burn
+// bumpAttempt records a failed authentication attempt against the given IP
+// and returns the updated attempt count.
+// Shared by /login, /setup, and Basic Auth so a determined attacker can't trivially burn
 // attempts on one endpoint and switch to the other.
-func bumpAttempt(ip string) {
+func bumpAttempt(ip string) int {
+	loginAttemptsMu.Lock()
+	defer loginAttemptsMu.Unlock()
+
 	v, _ := loginAttempts.Load(ip)
 	var att loginAttempt
 	if v != nil {
 		att = v.(loginAttempt)
+		if time.Since(att.last) >= 15*time.Minute {
+			att.count = 0
+		}
 	}
 	att.count++
 	att.last = time.Now()
 	loginAttempts.Store(ip, att)
+	return att.count
+}
+
+func isRateLimited(key string, maxAttempts int) bool {
+	loginAttemptsMu.Lock()
+	defer loginAttemptsMu.Unlock()
+
+	v, _ := loginAttempts.Load(key)
+	if v == nil {
+		return false
+	}
+	att := v.(loginAttempt)
+	if time.Since(att.last) >= 15*time.Minute {
+		loginAttempts.Delete(key)
+		return false
+	}
+	return att.count >= maxAttempts
+}
+
+func isIPRateLimited(ip string) bool {
+	return isRateLimited(ip, 5)
+}
+
+func clearLoginAttempts(ip string) {
+	loginAttemptsMu.Lock()
+	defer loginAttemptsMu.Unlock()
+	loginAttempts.Delete(ip)
+}
+
+// CleanupStaleLoginAttempts removes login attempt entries whose last activity
+// was older than maxAge. It is concurrency-safe and returns the number of cleaned entries.
+func CleanupStaleLoginAttempts(maxAge time.Duration) int {
+	loginAttemptsMu.Lock()
+	defer loginAttemptsMu.Unlock()
+
+	cleaned := 0
+	now := time.Now()
+	loginAttempts.Range(func(key, value any) bool {
+		if att, ok := value.(loginAttempt); ok {
+			if now.Sub(att.last) >= maxAge {
+				loginAttempts.Delete(key)
+				cleaned++
+			}
+		}
+		return true
+	})
+	return cleaned
+}
+
+// StartLoginAttemptsCleanup starts a background goroutine that periodically sweeps
+// stale login attempts older than 15 minutes. It stops cleanly when ctx is cancelled.
+func StartLoginAttemptsCleanup(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				CleanupStaleLoginAttempts(15 * time.Minute)
+			}
+		}
+	}()
 }
 
 func (h *Handler) handlePostLogin(c *gin.Context) {
 	ip := c.ClientIP()
-	val, _ := loginAttempts.Load(ip)
-	var att loginAttempt
-	if val != nil {
-		att = val.(loginAttempt)
-		if att.count >= 5 && time.Since(att.last) < 15*time.Minute {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_requests"})
-			return
-		}
+	if isIPRateLimited(ip) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_requests"})
+		return
 	}
 
 	username := c.PostForm("username")
@@ -83,7 +155,7 @@ func (h *Handler) handlePostLogin(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"status": "force_password_change", "username": username})
 			return
 		}
-		loginAttempts.Delete(ip) // Reset on success
+		clearLoginAttempts(ip) // Reset on success
 		sessionToken, err := database.CreateSession(username)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
@@ -96,15 +168,15 @@ func (h *Handler) handlePostLogin(c *gin.Context) {
 	}
 
 	// On failure
-	att.count++
-	att.last = time.Now()
-	loginAttempts.Store(ip, att)
+	attempts := bumpAttempt(ip)
 
-	// Artificial delay to thwart fast scripts
-	time.Sleep(1 * time.Second)
+	// Artificial delay to thwart fast scripts (skip in test mode for test speed)
+	if gin.Mode() != gin.TestMode {
+		time.Sleep(1 * time.Second)
+	}
 
 	database.LogAuditFromCtx(c, username, database.AuditActionLoginFail, "", database.AuditStatusDenied)
-	if att.count >= 5 {
+	if attempts >= 5 {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "ip_blocked"})
 	} else {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -130,7 +202,7 @@ func (h *Handler) handleGetResetAdmin(c *gin.Context) {
 	dbToken := strings.TrimSpace(database.GetSetting("admin_reset_token"))
 	expiryStr := strings.TrimSpace(database.GetSetting("admin_reset_expiry"))
 
-	if token == "" || token != dbToken {
+	if token == "" || dbToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(dbToken)) != 1 {
 		c.String(http.StatusForbidden, "Invalid token")
 		return
 	}
@@ -153,11 +225,18 @@ func (h *Handler) handlePostResetAdmin(c *gin.Context) {
 		token = strings.TrimSpace(c.Query("token"))
 	}
 	password := c.PostForm("password")
+	if utf8.RuneCountInString(password) < 8 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "password_too_short",
+			"message": "Password must be at least 8 characters long",
+		})
+		return
+	}
 
 	dbToken := strings.TrimSpace(database.GetSetting("admin_reset_token"))
 	expiryStr := strings.TrimSpace(database.GetSetting("admin_reset_expiry"))
 
-	if token == "" || token != dbToken {
+	if token == "" || dbToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(dbToken)) != 1 {
 		c.JSON(http.StatusForbidden, gin.H{"error": "invalid_token"})
 		return
 	}

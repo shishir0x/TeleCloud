@@ -11,6 +11,7 @@ import (
 	"telecloud/tgclient"
 	"telecloud/utils"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -51,12 +52,9 @@ func (h *Handler) handlePostSetup(c *gin.Context) {
 	// Same per-IP rate limit as /login to slow down anyone who slips past the
 	// setup-token gate (e.g. local actors).
 	ip := c.ClientIP()
-	if v, _ := loginAttempts.Load(ip); v != nil {
-		att := v.(loginAttempt)
-		if att.count >= 5 && time.Since(att.last) < 15*time.Minute {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_requests"})
-			return
-		}
+	if isIPRateLimited(ip) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_requests"})
+		return
 	}
 
 	username := c.PostForm("username")
@@ -65,6 +63,14 @@ func (h *Handler) handlePostSetup(c *gin.Context) {
 	if username == "" || password == "" {
 		bumpAttempt(ip)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username and password required"})
+		return
+	}
+	if utf8.RuneCountInString(password) < 8 {
+		bumpAttempt(ip)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "password_too_short",
+			"message": "Password must be at least 8 characters long",
+		})
 		return
 	}
 
@@ -78,6 +84,7 @@ func (h *Handler) handlePostSetup(c *gin.Context) {
 	database.SetSetting("admin_password_hash", string(hashedPassword))
 	database.SetSetting("webdav_enabled", "false")
 
+	clearLoginAttempts(ip)
 	// Create session
 	sessionToken, err := database.CreateSession(username)
 	if err != nil {

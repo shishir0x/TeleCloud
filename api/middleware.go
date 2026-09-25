@@ -28,7 +28,19 @@ type chunkState struct {
 var (
 	chunkTrackerSync sync.Map // map[string]*chunkState
 	loginAttempts    sync.Map
+	loginAttemptsMu  sync.Mutex
 )
+
+// DeleteChunkTracker removes a task entry from chunkTrackerSync.
+func DeleteChunkTracker(taskID string) {
+	chunkTrackerSync.Delete(taskID)
+}
+
+// HasChunkTracker reports whether a task entry exists in chunkTrackerSync.
+func HasChunkTracker(taskID string) bool {
+	_, ok := chunkTrackerSync.Load(taskID)
+	return ok
+}
 
 type loginAttempt struct {
 	count int
@@ -106,6 +118,31 @@ func securityHeadersMiddleware() gin.HandlerFunc {
 
 		c.Header("Cross-Origin-Resource-Policy", "cross-origin")
 		c.Header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+
+		// Content Security Policy (CSP):
+		// - 'unsafe-eval' is required because Alpine.js uses `new Function(...)` to evaluate
+		//   declarative directives (x-data, x-init, @click, x-show, etc.) across all pages.
+		// - 'unsafe-inline' in script-src is required for template-rendered inline configuration
+		//   scripts (e.g. window.TELECLOUD_VERSION and TeleCloud.version injections).
+		// - 'unsafe-inline' in style-src is required for Alpine.js dynamic `:style` directives,
+		//   x-transition state mutations, and inline <style> blocks (app-preloader, epub themes).
+		// - 'blob:' and 'data:' are required for PDF.js workers/rendering, Artplayer/Plyr media
+		//   streaming (HLS MediaSource blob URLs), Jassub subtitle decoders, and canvas previews.
+		// - 'https://api.github.com' is required in connect-src for in-app version update checks.
+		c.Header("Content-Security-Policy", "default-src 'self'; "+
+			"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "+
+			"style-src 'self' 'unsafe-inline'; "+
+			"img-src 'self' data: blob:; "+
+			"font-src 'self' data:; "+
+			"connect-src 'self' ws: wss: blob: data: https://api.github.com; "+
+			"media-src 'self' blob: data:; "+
+			"worker-src 'self' blob:; "+
+			"child-src 'self' blob:; "+
+			"frame-src 'self' blob: data:; "+
+			"object-src 'none'; "+
+			"base-uri 'self'; "+
+			"frame-ancestors 'self';")
+
 		c.Next()
 	}
 }
@@ -232,14 +269,9 @@ func authMiddleware() gin.HandlerFunc {
 			if hasAuth {
 				// Apply the same IP-based rate limiting as the login form
 				ip := c.ClientIP()
-				val, _ := loginAttempts.Load(ip)
-				var att loginAttempt
-				if val != nil {
-					att = val.(loginAttempt)
-					if att.count >= 5 && time.Since(att.last) < 15*time.Minute {
-						c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too_many_requests"})
-						return
-					}
+				if isIPRateLimited(ip) {
+					c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too_many_requests"})
+					return
 				}
 
 				var authOK bool
@@ -264,11 +296,9 @@ func authMiddleware() gin.HandlerFunc {
 				}
 
 				if authOK {
-					loginAttempts.Delete(ip)
+					clearLoginAttempts(ip)
 				} else {
-					att.count++
-					att.last = time.Now()
-					loginAttempts.Store(ip, att)
+					bumpAttempt(ip)
 				}
 			}
 		}
@@ -337,8 +367,8 @@ func gzipMiddleware() gin.HandlerFunc {
 
 		// Avoid compressing stream, download, WebDAV, S3, WebSocket, and large comic/epub page binary data
 		path := c.Request.URL.Path
-		if strings.Contains(path, "/stream") || 
-			strings.Contains(path, "/dl") || 
+		if strings.Contains(path, "/stream") ||
+			strings.Contains(path, "/dl") ||
 			strings.Contains(path, "/download/") ||
 			strings.Contains(path, "/cbz/page") ||
 			strings.Contains(path, "/epub/resource") ||
@@ -358,7 +388,7 @@ func gzipMiddleware() gin.HandlerFunc {
 
 		c.Header("Content-Encoding", "gzip")
 		c.Header("Vary", "Accept-Encoding")
-		
+
 		c.Writer = &gzipResponseWriter{c.Writer, gz}
 		c.Next()
 	}

@@ -181,7 +181,8 @@ func (h *Handler) handleGetFiles(c *gin.Context) {
 	}
 	err := database.RODB.Select(&files, query, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("ERROR: failed to query files: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 		return
 	}
 
@@ -277,7 +278,8 @@ func (h *Handler) handlePostFolders(c *gin.Context) {
 	uniqueName := database.GetUniqueFilename(database.RODB, dbPath, name, true, 0, username)
 	_, err := database.DB.Exec("INSERT INTO files (filename, path, is_folder, owner) VALUES (?, ?, TRUE, ?)", uniqueName, dbPath, username)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("ERROR: failed to create folder: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
@@ -380,6 +382,11 @@ func (h *Handler) handlePostUpload(c *gin.Context) {
 	out, err := os.OpenFile(tempFilePath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Printf("UPLOAD ERROR: Failed to open temp file %s: %v", tempFilePath, err)
+		state.Lock()
+		if len(state.received) == 0 {
+			chunkTrackerSync.Delete(taskID)
+		}
+		state.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_open_temp_file"})
 		return
 	}
@@ -389,6 +396,11 @@ func (h *Handler) handlePostUpload(c *gin.Context) {
 	if _, err := out.Seek(offset, io.SeekStart); err != nil {
 		out.Close()
 		log.Printf("UPLOAD ERROR: Failed to seek temp file %s: %v", tempFilePath, err)
+		state.Lock()
+		if len(state.received) == 0 {
+			chunkTrackerSync.Delete(taskID)
+		}
+		state.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_seek_temp_file"})
 		return
 	}
@@ -399,6 +411,11 @@ func (h *Handler) handlePostUpload(c *gin.Context) {
 	out.Close()
 	if err != nil {
 		log.Printf("UPLOAD ERROR: Failed to write chunk to %s: %v", tempFilePath, err)
+		state.Lock()
+		if len(state.received) == 0 {
+			chunkTrackerSync.Delete(taskID)
+		}
+		state.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_write_chunk"})
 		return
 	}
@@ -425,7 +442,7 @@ func (h *Handler) handlePostUpload(c *gin.Context) {
 	serverPercent := int((float64(actualReceived) / float64(totalChunks)) * 100)
 	tgclient.UpdateTaskWithFile(taskID, "uploading_to_server", serverPercent, "pushing_to_server", "", username, totalSize, uploadedBytes)
 
-	isDone := actualReceived == totalChunks && !state.uploadStarted
+	isDone := actualReceived >= totalChunks && !state.uploadStarted
 	if isDone {
 		state.uploadStarted = true
 		chunkTrackerSync.Delete(taskID)
@@ -753,18 +770,21 @@ func (h *Handler) handlePostPaste(c *gin.Context) {
 
 				_, err = tx.Exec("UPDATE files SET path = ?, filename = ? WHERE id = ?", req.Destination, uniqueName, id)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					log.Printf("ERROR: paste update file path failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 					return
 				}
 				_, err = tx.Exec("UPDATE files SET path = "+database.ConcatPathSQL()+" WHERE (path = ? OR path LIKE ?) AND owner = ?", newPrefix, len(oldPrefix)+1, oldPrefix, oldPrefix+"/%", item.Owner)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					log.Printf("ERROR: paste update children paths failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 					return
 				}
 			} else {
 				_, err = tx.Exec("UPDATE files SET path = ?, filename = ? WHERE id = ?", req.Destination, uniqueName, id)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					log.Printf("ERROR: paste move file failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 					return
 				}
 			}
@@ -772,7 +792,8 @@ func (h *Handler) handlePostPaste(c *gin.Context) {
 			if item.IsFolder {
 				_, err = tx.Exec("INSERT INTO files (filename, path, is_folder, owner) VALUES (?, ?, TRUE, ?)", uniqueName, req.Destination, username)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					log.Printf("ERROR: paste copy folder insert failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 					return
 				}
 
@@ -788,7 +809,8 @@ func (h *Handler) handlePostPaste(c *gin.Context) {
 				var children []database.File
 				err = tx.Select(&children, "SELECT * FROM files WHERE (path = ? OR path LIKE ?) AND owner = ?", oldPrefix, oldPrefix+"/%", item.Owner)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					log.Printf("ERROR: paste copy select children failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 					return
 				}
 
@@ -798,14 +820,16 @@ func (h *Handler) handlePostPaste(c *gin.Context) {
 						"INSERT INTO files (message_id, filename, path, size, mime_type, is_folder, thumb_path, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 						child.MessageID, child.Filename, newChildPath, child.Size, child.MimeType, child.IsFolder, child.ThumbPath, username)
 					if err != nil {
-						c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+						log.Printf("ERROR: paste copy child insert failed: %v", err)
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 						return
 					}
 
 					if !child.IsFolder {
 						_, err = tx.Exec("INSERT INTO file_parts (file_id, part_index, message_id, size) SELECT ?, part_index, message_id, size FROM file_parts WHERE file_id = ?", newChildID, child.ID)
 						if err != nil {
-							c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+							log.Printf("ERROR: paste copy file parts insert failed: %v", err)
+							c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 							return
 						}
 					}
@@ -818,12 +842,14 @@ func (h *Handler) handlePostPaste(c *gin.Context) {
 					"INSERT INTO files (message_id, filename, path, size, mime_type, is_folder, thumb_path, owner) VALUES (?, ?, ?, ?, ?, FALSE, ?, ?)",
 					item.MessageID, uniqueName, req.Destination, item.Size, item.MimeType, item.ThumbPath, username)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					log.Printf("ERROR: paste copy file insert failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 					return
 				}
 				_, err = tx.Exec("INSERT INTO file_parts (file_id, part_index, message_id, size) SELECT ?, part_index, message_id, size FROM file_parts WHERE file_id = ?", newFileID, item.ID)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					log.Printf("ERROR: paste copy file parts failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 					return
 				}
 			}
@@ -852,12 +878,15 @@ func (h *Handler) handleDeleteFile(c *gin.Context) {
 	}
 
 	now := time.Now()
+	if item.ShareToken != nil && *item.ShareToken != "" {
+		database.DB.Exec("DELETE FROM share_sessions WHERE share_token = ?", *item.ShareToken)
+	}
 	if item.IsFolder {
 		oldPrefix := item.Path + "/" + item.Filename
 		if item.Path == "/" {
 			oldPrefix = "/" + item.Filename
 		}
-		database.DB.Exec("UPDATE files SET deleted_at = ? WHERE (path = ? OR path LIKE ?) AND owner = ? AND deleted_at IS NULL", now, oldPrefix, oldPrefix+"/%", item.Owner)
+		database.DB.Exec("DELETE FROM files WHERE (path = ? OR path LIKE ?) AND owner = ? AND deleted_at IS NULL", now, oldPrefix, oldPrefix+"/%", item.Owner)
 	}
 	database.DB.Exec("UPDATE files SET deleted_at = ? WHERE id = ?", now, id)
 
@@ -869,7 +898,8 @@ func (h *Handler) handleGetTrashFiles(c *gin.Context) {
 	var allFiles []database.File
 	err := database.RODB.Select(&allFiles, "SELECT * FROM files WHERE owner = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC", username)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("ERROR: failed to query trash files: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 		return
 	}
 
@@ -1155,14 +1185,16 @@ func (h *Handler) handleRenameFile(c *gin.Context) {
 		}
 		_, err = tx.Exec("UPDATE files SET path = "+database.ConcatPathSQL()+" WHERE (path = ? OR path LIKE ?) AND owner = ?", newPrefix, len(oldPrefix)+1, oldPrefix, oldPrefix+"/%", item.Owner)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			log.Printf("ERROR: failed to update renamed folder paths: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 			return
 		}
 	}
 
 	_, err = tx.Exec("UPDATE files SET filename = ? WHERE id = ?", uniqueName, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("ERROR: failed to update file name: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 		return
 	}
 
@@ -1674,6 +1706,9 @@ func (h *Handler) handleDeletePublicTaskAPI(c *gin.Context) {
 
 	taskID := c.Param("task_id")
 	if tgclient.CancelTask(taskID, username) {
+		chunkTrackerSync.Delete(taskID)
+		database.DB.Exec("DELETE FROM upload_chunks WHERE task_id = ?", taskID)
+		database.DB.Exec("DELETE FROM upload_tasks WHERE id = ?", taskID)
 		c.JSON(http.StatusOK, gin.H{"status": "cancelled"})
 	} else {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found or already completed"})

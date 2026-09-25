@@ -29,6 +29,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -67,23 +68,44 @@ func restartApp() {
 	}
 }
 
+func buildRestartCommand(executable string, args []string) *exec.Cmd {
+	var cmdArgs []string
+	if len(args) > 1 {
+		cmdArgs = args[1:]
+	}
+	cmd := exec.Command(executable, cmdArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = os.Environ()
+	if dir, err := os.Getwd(); err == nil {
+		cmd.Dir = dir
+	}
+	return cmd
+}
+
 func executeRestart() {
 	log.Println("Restarting TeleCloud...")
 	executable, err := os.Executable()
 	if err != nil {
 		log.Printf("Error getting executable path: %v. Exiting instead.", err)
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	if runtime.GOOS == "windows" {
-		log.Println("Self-restart not supported on Windows. Please restart manually.")
+		cmd := buildRestartCommand(executable, os.Args)
+		if err := cmd.Start(); err != nil {
+			log.Printf("Failed to restart app on Windows: %v. Please restart manually.", err)
+			os.Exit(1)
+		}
+		log.Println("New TeleCloud process started successfully on Windows. Exiting old process.")
 		os.Exit(0)
 	}
 
 	err = syscall.Exec(executable, os.Args, os.Environ())
 	if err != nil {
 		log.Printf("Failed to restart app: %v. Exiting instead.", err)
-		os.Exit(0)
+		os.Exit(1)
 	}
 }
 
@@ -192,6 +214,7 @@ func main() {
 	defer cancelApp()
 
 	tgclient.StartBackupTask(appCtx, cfg)
+	api.StartLoginAttemptsCleanup(appCtx, 5*time.Minute)
 
 	// Catch OS signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -477,6 +500,7 @@ func startCleanupTask(cfg *config.Config) {
 					filename := filepath.Base(path)
 					if idx := strings.Index(filename, "_"); idx != -1 {
 						taskId := filename[:idx]
+						api.DeleteChunkTracker(taskId)
 						database.DB.Exec("DELETE FROM upload_chunks WHERE task_id = ?", taskId)
 						database.DB.Exec("DELETE FROM upload_tasks WHERE id = ?", taskId)
 					}
