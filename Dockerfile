@@ -31,7 +31,7 @@ RUN if [ ! -f web/build-frontend.sh ]; then \
 RUN cd web && sed -i 's/\r$//' build-frontend.sh && bash build-frontend.sh
 
 # Build Go binary for TARGET architecture
-ARG VERSION=v3.8.8
+ARG VERSION=v3.8.9
 ARG DEFAULT_API_ID="0"
 ARG DEFAULT_API_HASH=""
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
