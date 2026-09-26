@@ -1604,7 +1604,7 @@ func uploadFilePart(ctx context.Context, api *tg.Client, up *uploader.Uploader, 
 		displayInfo = filename
 	}
 
-	finalCaption := "<b>📄 File:</b> " + displayInfo + "\n\n<b>🚀 Powered by TeleCloud Go</b>\n<i>Unlimited Cloud Storage via Telegram</i>\n\n🔗 <a href=\"https://github.com/dabeecao/telecloud-go\">GitHub Repository</a>"
+	finalCaption := "<b>📄 File:</b> " + displayInfo + "\n\n<b>🚀 Powered by TeleCloud Go</b>\n<i>Unlimited Cloud Storage via Telegram</i>"
 
 	docBuilder := message.UploadedDocument(file, html.String(nil, finalCaption)).
 		Filename(filename).
